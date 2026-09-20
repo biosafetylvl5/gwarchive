@@ -77,6 +77,27 @@ from gwarchive.naming import (
     matches_pattern,
     rename_preserving_prefix,
 )
+from gwarchive.options import (
+    ArchiveVersion,
+    AsJsonReport,
+    AsJsonSync,
+    AsJsonTable,
+    BasePath,
+    CategoryArg,
+    CategoryOpt,
+    DryRun,
+    Force,
+    Keep,
+    NoCompressPull,
+    NoCompressPush,
+    PullRemote,
+    PushRemotes,
+    Selector,
+    SourceArg,
+    Yes,
+    app,
+    validate_category,
+)
 from gwarchive.output import (
     INDENT,
     STYLES,
@@ -105,7 +126,6 @@ from gwarchive.paths import (
     compute_folder_stats,
     display,
     ensure_directory,
-    get_base_path,
     iter_archive_folders,
     require_archive,
     resolve_prefix,
@@ -142,12 +162,6 @@ from gwarchive.tombstone import (
 
 __version__ = "0.3.0"
 
-app = typer.Typer(
-    help="GWArchive CLI tool for file organization",
-    no_args_is_help=True,
-    pretty_exceptions_show_locals=False,
-)
-
 
 # The sprite ``clears`` greets with when neither the positional argument nor
 # $GWARCHIVE_POKEMON says otherwise.
@@ -177,43 +191,6 @@ DEFAULT_POKEMON = "bulbasaur"
 # --- Parameter validation ------------------------------------------------------
 
 
-def validate_category(value: str | None) -> str | None:
-    """Accept a category letter in any case; reject anything else loudly.
-
-    An invalid category must never fall through to "search everything" -- a
-    silent wrong answer is worse than an error.
-    """
-    if value is None:
-        return None
-    candidate = value.strip().upper()
-    if candidate not in CATEGORIES:
-        raise typer.BadParameter(
-            f"{value!r} is not a category. Choose one of: "
-            + ", ".join(f"{k} ({v})" for k, v in CATEGORIES.items())
-        )
-    return candidate
-
-
-def version_callback(value: bool) -> None:
-    if value:
-        print(f"gwarchive {__version__}")
-        raise typer.Exit()
-
-
-@app.callback()
-def main(
-    version: bool = typer.Option(
-        False, "--version", callback=version_callback, is_eager=True, help="Show the version and exit"
-    ),
-    quiet: bool = typer.Option(
-        False, "--quiet", "-q", help="Suppress success output; errors still go to stderr"
-    ),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show extra detail"),
-) -> None:
-    """GWArchive CLI tool for file organization."""
-    output.set_verbosity(quiet, verbose)
-
-
 # --- Shared option types -------------------------------------------------------
 #
 # One declaration per option, however many commands take it -- `--path` was
@@ -225,58 +202,6 @@ def main(
 # `default_factory` runs at parse time only when the flag is absent, and it
 # forbids a `=` default -- hence the bare `*` making it keyword-only below.
 # Drop `show_default=False` and every --path line grows `[default: (dynamic)]`.
-
-BasePath = Annotated[
-    Path,
-    typer.Option("--path", default_factory=get_base_path, show_default=False, help="Base path for GWArchive"),
-]
-DryRun = Annotated[bool, typer.Option("--dry-run", help="Show what would happen without making changes")]
-# Three --json wordings, because there are three output shapes to replace.
-AsJsonTable = Annotated[bool, typer.Option("--json", help="Emit JSON instead of a table")]
-AsJsonReport = Annotated[bool, typer.Option("--json", help="Emit JSON instead of a report")]
-AsJsonSync = Annotated[bool, typer.Option("--json", help="Emit JSON output")]
-Force = Annotated[bool, typer.Option("--force", help="Replace the destination if it already exists")]
-Yes = Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt")]
-CategoryArg = Annotated[
-    str,
-    typer.Argument(callback=validate_category, metavar=CATEGORY_METAVAR, help="Category (P, R, M, A, O)"),
-]
-CategoryOpt = Annotated[
-    str | None,
-    typer.Option(
-        "--category",
-        "-c",
-        callback=validate_category,
-        metavar=CATEGORY_METAVAR,
-        help="Limit to one category (P, R, M, A, O)",
-    ),
-]
-SourceArg = Annotated[str, typer.Argument(help="Source prefix or path")]
-Selector = Annotated[str, typer.Argument(help="Category (P, R, M, A, O) or folder prefix/path")]
-PushRemotes = Annotated[
-    list[str] | None,
-    typer.Option(
-        "--remote", help="Remote destination, e.g. nas:archive (default $GWARCHIVE_REMOTE). Can be repeated."
-    ),
-]
-PullRemote = Annotated[
-    str | None,
-    typer.Option("--remote", help="Remote source (defaults to recorded remote or $GWARCHIVE_REMOTE)"),
-]
-ArchiveVersion = Annotated[
-    str | None,
-    typer.Option("--version", help="Archived copy to fetch: 1 is newest (default), or an object name"),
-]
-Keep = Annotated[
-    int | None,
-    typer.Option("--keep", help="Archived copies to retain per remote (default 1; 0 keeps every copy)"),
-]
-NoCompressPush = Annotated[
-    bool, typer.Option("--no-compress", help="Copy files individually instead of one compressed archive")
-]
-NoCompressPull = Annotated[
-    bool, typer.Option("--no-compress", help="Copy files individually, ignoring any recorded archive")
-]
 
 
 # --- Commands ------------------------------------------------------------------

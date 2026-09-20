@@ -20,7 +20,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 import g
-from gwarchive import clock, external, naming, output, paths, sync, tarball, tombstone
+from gwarchive import clock, external, naming, options, output, paths, sync, tarball, tombstone
 
 runner = CliRunner()
 
@@ -44,7 +44,7 @@ def isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def run(*args: object, input: str | None = None) -> Result:  # noqa: A002
-    return runner.invoke(g.app, [str(a) for a in args], input=input)
+    return runner.invoke(options.app, [str(a) for a in args], input=input)
 
 
 @pytest.fixture
@@ -591,14 +591,14 @@ def test_tables_use_ascii_when_not_a_terminal(archive: Path) -> None:
 
 
 def test_quiet_suppresses_success_output(archive: Path) -> None:
-    result = runner.invoke(g.app, ["--quiet", "create", "P", "Alpha", "--path", str(archive)])
+    result = runner.invoke(options.app, ["--quiet", "create", "P", "Alpha", "--path", str(archive)])
     assert result.exit_code == 0
     assert result.stdout.strip() == ""
     assert (archive / "Project" / "P0001 Alpha").is_dir()
 
 
 def test_quiet_still_reports_errors(archive: Path) -> None:
-    result = runner.invoke(g.app, ["--quiet", "mv", "P9", "Archive", "--path", str(archive)])
+    result = runner.invoke(options.app, ["--quiet", "mv", "P9", "Archive", "--path", str(archive)])
     assert result.exit_code == 1
     assert "Source not found" in result.stderr
 
