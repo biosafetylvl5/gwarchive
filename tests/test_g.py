@@ -20,7 +20,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 import g
-from gwarchive import clock, naming, output, paths
+from gwarchive import clock, external, naming, output, paths, tombstone
 
 runner = CliRunner()
 
@@ -241,7 +241,7 @@ def test_clears_pokemon_choice_argument_beats_env(
 
 
 def test_clears_survives_a_missing_pokeget(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(g, "run_pokeget", lambda args: None)
+    monkeypatch.setattr(external, "run_pokeget", lambda args: None)
     result = run("clears")
     assert result.exit_code == 0
 
@@ -626,7 +626,7 @@ def test_keep_prunes_on_every_remote_it_recorded(
         ]
     deleted = sorted(Path(c[1]).parent.parent.name for c in rclone_local if c[0] == "deletefile")
     assert deleted == ["r1", "r2"]
-    versions = (g.read_tombstone(sample) or {})["archive"]["versions"]  # type: ignore[index]
+    versions = (tombstone.read_tombstone(sample) or {})["archive"]["versions"]  # type: ignore[index]
     assert len(versions) == 1
 
 
@@ -980,7 +980,7 @@ def pokeget(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         calls.append(list(args))
         return subprocess.CompletedProcess(args=["pokeget", *args], returncode=0)
 
-    monkeypatch.setattr(g, "run_pokeget", _fake)
+    monkeypatch.setattr(external, "run_pokeget", _fake)
     return calls
 
 
@@ -1010,7 +1010,7 @@ def rclone(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[list[str]]]:
                 stderr=stderr if failed else "",
             )
 
-        monkeypatch.setattr(g, "run_rclone", _fake_run)
+        monkeypatch.setattr(external, "run_rclone", _fake_run)
         return calls
 
     return install
@@ -1061,7 +1061,7 @@ def test_push_refuses_a_remote_without_a_colon(
     assert res.exit_code == 2
     assert "not a remote target" in res.stderr
     assert calls == []
-    assert g.read_tombstone(archive / "Project" / "P0001 Alpha") is None
+    assert tombstone.read_tombstone(archive / "Project" / "P0001 Alpha") is None
 
     dry = run("push", "P1", "--remote", bad, "--dry-run", "--path", archive)
     assert dry.exit_code == 2
@@ -1107,7 +1107,7 @@ def test_offload_refuses_a_colonless_remote_before_deleting_anything(
     assert "not a remote target" in res.stderr
     assert calls == []
     assert doc.exists()
-    assert not g.is_offloaded(archive / "Project" / "P0001 Alpha")
+    assert not tombstone.is_offloaded(archive / "Project" / "P0001 Alpha")
 
 
 @pytest.mark.parametrize("command", ["pull", "restore"])
@@ -1134,7 +1134,7 @@ def test_pull_and_restore_refuse_a_colonless_remote_recorded_in_metadata(
     calls = rclone()
     run("create", "P", "Alpha", "--path", archive)
     folder = archive / "Project" / "P0001 Alpha"
-    g.write_tombstone(
+    tombstone.write_tombstone(
         folder,
         {"prefix": "P0001", "offloaded_at": "2026-01-01T00:00:00", "remotes": ["unraid/Project/P0001 Alpha"]},
     )
@@ -1195,7 +1195,7 @@ def test_pull_and_restore_skip_past_a_stray_recorded_remote(
     calls = rclone()
     run("create", "P", "Alpha", "--path", archive)
     folder = archive / "Project" / "P0001 Alpha"
-    g.write_tombstone(
+    tombstone.write_tombstone(
         folder,
         {
             "prefix": "P0001",
@@ -1217,11 +1217,11 @@ def test_push_drops_a_stray_recorded_remote_from_the_metadata(
     rclone()
     run("create", "P", "Alpha", "--path", archive)
     folder = archive / "Project" / "P0001 Alpha"
-    g.write_tombstone(folder, {"prefix": "P0001", "remotes": ["unraid/Project/P0001 Alpha"]})
+    tombstone.write_tombstone(folder, {"prefix": "P0001", "remotes": ["unraid/Project/P0001 Alpha"]})
 
     res = run("push", "P1", "--remote", "nas:archive", "--path", archive)
     assert res.exit_code == 0
-    meta = g.read_tombstone(folder)
+    meta = tombstone.read_tombstone(folder)
     assert meta is not None
     assert meta["remotes"] == ["nas:archive/Project/P0001 Alpha"]
 
@@ -1242,19 +1242,19 @@ def test_push_invokes_rclone_copy_and_writes_metadata(
     # Assert rclone was invoked with copy and --exclude
     assert len(calls) == 1
     folder_str = str(archive / "Project" / "P0001 Alpha")
-    assert calls[0] == ["copy", folder_str, "nas:archive/Project/P0001 Alpha", *g.RCLONE_EXCLUDES]
+    assert calls[0] == ["copy", folder_str, "nas:archive/Project/P0001 Alpha", *external.RCLONE_EXCLUDES]
 
     # Local file is still there (push is non-destructive)
     assert doc.exists()
 
     # Metadata file is created
-    meta = g.read_tombstone(archive / "Project" / "P0001 Alpha")
+    meta = tombstone.read_tombstone(archive / "Project" / "P0001 Alpha")
     assert meta is not None
     assert meta["prefix"] == "P0001"
     assert meta["remotes"] == ["nas:archive/Project/P0001 Alpha"]
     assert "last_pushed_at" in meta
     assert "offloaded_at" not in meta  # not offloaded!
-    assert not g.is_offloaded(archive / "Project" / "P0001 Alpha")
+    assert not tombstone.is_offloaded(archive / "Project" / "P0001 Alpha")
 
 
 def test_push_category_pushes_all_folders(archive: Path, rclone: Callable[..., list[list[str]]]) -> None:
@@ -1274,7 +1274,7 @@ def test_push_repeatable_remote(archive: Path, rclone: Callable[..., list[list[s
     res = run("push", "P1", "--remote", "nas:archive", "--remote", "proton:mirror", "--path", archive)
     assert res.exit_code == 0
     assert len(calls) == 2
-    meta = g.read_tombstone(archive / "Project" / "P0001 Alpha")
+    meta = tombstone.read_tombstone(archive / "Project" / "P0001 Alpha")
     assert meta is not None
     assert meta["remotes"] == ["nas:archive/Project/P0001 Alpha", "proton:mirror/Project/P0001 Alpha"]
 
@@ -1289,7 +1289,7 @@ def test_push_skips_tombstones_and_preserves_their_metadata(
     folder = archive / "Project" / "P0001 Alpha"
     (folder / "data.bin").write_bytes(b"x" * 1234)
     run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
-    before = g.read_tombstone(folder)
+    before = tombstone.read_tombstone(folder)
     assert before is not None and before["size"] == 1234
 
     calls.clear()
@@ -1298,7 +1298,7 @@ def test_push_skips_tombstones_and_preserves_their_metadata(
     assert "Skipped" in res.stdout
     assert len(calls) == 0
 
-    after = g.read_tombstone(folder)
+    after = tombstone.read_tombstone(folder)
     assert after is not None
     assert after["size"] == 1234
     assert after["file_count"] == before["file_count"]
@@ -1321,7 +1321,7 @@ def test_offload_category_skips_already_offloaded_folders(
     assert res.exit_code == 0
     assert "Skipped" in res.stdout
     assert len(calls) == 1  # only Beta transferred
-    assert g.is_offloaded(archive / "Project" / "P0002 Beta")
+    assert tombstone.is_offloaded(archive / "Project" / "P0002 Beta")
 
     # And when everything is already parked, it succeeds with a clear message.
     calls.clear()
@@ -1372,8 +1372,8 @@ def test_offload_deletes_local_contents_and_leaves_tombstone(
 
     # Tombstone file remains
     assert (folder / naming.TOMBSTONE_NAME).exists()
-    assert g.is_offloaded(folder)
-    meta = g.read_tombstone(folder)
+    assert tombstone.is_offloaded(folder)
+    meta = tombstone.read_tombstone(folder)
     assert meta is not None
     assert "offloaded_at" in meta
     assert meta["prefix"] == "P0001"
@@ -1401,7 +1401,7 @@ def test_offload_dry_run_leaves_files_intact(archive: Path, rclone: Callable[...
     assert "Would offload" in res.stdout
     assert len(calls) == 0
     assert doc.exists()
-    assert not g.is_offloaded(archive / "Project" / "P0001 Alpha")
+    assert not tombstone.is_offloaded(archive / "Project" / "P0001 Alpha")
 
 
 def test_pull_downloads_from_remote(archive: Path, rclone: Callable[..., list[list[str]]]) -> None:
@@ -1425,7 +1425,7 @@ def test_restore_downloads_and_clears_offloaded_status(
     run("create", "P", "Alpha", "--path", archive)
     folder = archive / "Project" / "P0001 Alpha"
     run("offload", "P1", "--remote", "nas:archive", "--yes", "--no-compress", "--path", archive)
-    assert g.is_offloaded(folder)
+    assert tombstone.is_offloaded(folder)
 
     calls.clear()
     res = run("restore", "P1", "--no-compress", "--path", archive)
@@ -1435,8 +1435,8 @@ def test_restore_downloads_and_clears_offloaded_status(
     assert calls[0][1] == "nas:archive/Project/P0001 Alpha"
 
     # Status cleared
-    assert not g.is_offloaded(folder)
-    meta = g.read_tombstone(folder)
+    assert not tombstone.is_offloaded(folder)
+    meta = tombstone.read_tombstone(folder)
     assert meta is not None
     assert "offloaded_at" not in meta
     assert "restored_at" in meta
@@ -1536,7 +1536,7 @@ def test_offload_writes_tombstone_before_deleting(
     real_rmtree = shutil.rmtree
 
     def spy_unlink(self: Path, missing_ok: bool = False) -> None:
-        seen.append(g.is_offloaded(folder))
+        seen.append(tombstone.is_offloaded(folder))
         real_unlink(self, missing_ok=missing_ok)
 
     real_unlink = Path.unlink
@@ -1563,7 +1563,7 @@ def test_multi_remote_offload_records_successful_copy_before_failure(
         rc = 1 if any("bad:" in arg for arg in args) else 0
         return subprocess.CompletedProcess(args=["rclone", *args], returncode=rc, stdout="", stderr="boom")
 
-    monkeypatch.setattr(g, "run_rclone", _fake_run)
+    monkeypatch.setattr(external, "run_rclone", _fake_run)
 
     res = run(
         "offload", "P1", "--remote", "good:archive", "--remote", "bad:archive", "--yes", "--path", archive
@@ -1571,11 +1571,11 @@ def test_multi_remote_offload_records_successful_copy_before_failure(
     assert res.exit_code == 1
     # Local files preserved, not offloaded...
     assert doc.exists()
-    assert not g.is_offloaded(folder)
+    assert not tombstone.is_offloaded(folder)
     # ...but the copy that did land is on record.
-    meta = g.read_tombstone(folder)
+    meta = tombstone.read_tombstone(folder)
     assert meta is not None
-    assert "good:archive/Project/P0001 Alpha" in g.get_recorded_remotes(meta)
+    assert "good:archive/Project/P0001 Alpha" in tombstone.get_recorded_remotes(meta)
 
 
 def test_restore_category_skips_live_folders(archive: Path, rclone: Callable[..., list[list[str]]]) -> None:
@@ -1608,7 +1608,7 @@ def test_rclone_failure_aborts_without_deleting_local_files(
     assert "connection timed out" in res.stderr
     # Crucial safety invariant: local file was not deleted!
     assert doc.exists()
-    assert not g.is_offloaded(archive / "Project" / "P0001 Alpha")
+    assert not tombstone.is_offloaded(archive / "Project" / "P0001 Alpha")
 
 
 @pytest.mark.parametrize(
@@ -1676,7 +1676,7 @@ def rclone_local(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
             args=["rclone", *args], returncode=returncode, stdout="", stderr=stderr
         )
 
-    monkeypatch.setattr(g, "run_rclone", _fake_run)
+    monkeypatch.setattr(external, "run_rclone", _fake_run)
     return calls
 
 
@@ -1769,11 +1769,11 @@ def test_offload_then_restore_round_trips_the_contents(
     shutil.copytree(folder, reference)
 
     assert run("offload", "P1", "--remote", remote, "--yes", "--path", archive).exit_code == 0
-    assert g.is_offloaded(folder)
+    assert tombstone.is_offloaded(folder)
     assert sorted(p.name for p in folder.iterdir()) == [".gwarchive-cache", naming.TOMBSTONE_NAME]
 
     assert run("restore", "P1", "--path", archive).exit_code == 0
-    assert not g.is_offloaded(folder)
+    assert not tombstone.is_offloaded(folder)
     assert (folder / "notes.txt").read_text() == "top level\n"
     assert (folder / "sub" / "deep.bin").read_bytes() == (reference / "sub" / "deep.bin").read_bytes()
     # The excluded cache is local-only, so the round trip must leave it exactly
@@ -1803,13 +1803,13 @@ def test_restore_refuses_an_object_that_fails_its_checksum(
     # Only copy recorded, so the hint must not offer a --version 2 that is not there.
     assert "--version" not in res.stderr
     assert sorted(p.name for p in folder.iterdir()) == [".gwarchive-cache", naming.TOMBSTONE_NAME]
-    assert g.is_offloaded(folder)
+    assert tombstone.is_offloaded(folder)
 
     # With a spare copy retained, the same failure points at it.
-    meta = g.read_tombstone(folder) or {}
+    meta = tombstone.read_tombstone(folder) or {}
     versions = meta["archive"]["versions"]  # type: ignore[index]
     versions.append({**versions[0], "name": "P0001 Alpha [draft].20250101-000000.tar.gz"})
-    g.write_tombstone(folder, meta)
+    tombstone.write_tombstone(folder, meta)
     res = run("restore", "P1", "--path", archive)
     assert res.exit_code == 1
     assert "--version 2" in res.stderr
@@ -1827,9 +1827,9 @@ def test_restore_warns_when_a_version_has_no_recorded_checksum(
     folder = sample
     assert run("offload", "P1", "--remote", remote, "--yes", "--path", archive).exit_code == 0
 
-    meta = g.read_tombstone(folder) or {}
+    meta = tombstone.read_tombstone(folder) or {}
     meta["archive"]["versions"][0].pop("sha256")  # type: ignore[index]
-    g.write_tombstone(folder, meta)
+    tombstone.write_tombstone(folder, meta)
 
     res = run("restore", "P1", "--path", archive)
     assert res.exit_code == 0
@@ -1889,7 +1889,7 @@ def test_the_mirror_excludes_the_same_namespace_the_archive_does(
 
     assert run("push", "P1", "--no-compress", "--remote", remote, "--path", archive).exit_code == 0
     assert calls[0][0] == "copy"
-    assert calls[0][3:] == g.RCLONE_EXCLUDES
+    assert calls[0][3:] == external.RCLONE_EXCLUDES
 
 
 def test_extraction_refuses_members_that_escape_the_folder(tmp_path: Path) -> None:
@@ -1933,7 +1933,7 @@ def test_no_compress_copies_files_and_records_no_archive(
     assert run("push", "P1", "--remote", remote, "--no-compress", "--path", archive).exit_code == 0
     assert calls[0][0] == "copy"
     assert (remote / "Project" / folder.name / "sub" / "deep.bin").is_file()
-    assert "archive" not in (g.read_tombstone(folder) or {})
+    assert "archive" not in (tombstone.read_tombstone(folder) or {})
 
 
 def test_a_no_compress_push_clears_a_stale_archive_block(
@@ -1948,10 +1948,10 @@ def test_a_no_compress_push_clears_a_stale_archive_block(
     folder = sample
 
     assert run("push", "P1", "--remote", remote, "--path", archive).exit_code == 0
-    assert "archive" in (g.read_tombstone(folder) or {})
+    assert "archive" in (tombstone.read_tombstone(folder) or {})
 
     assert run("push", "P1", "--remote", remote, "--no-compress", "--path", archive).exit_code == 0
-    assert "archive" not in (g.read_tombstone(folder) or {})
+    assert "archive" not in (tombstone.read_tombstone(folder) or {})
 
 
 @pytest.fixture
@@ -1991,7 +1991,7 @@ def test_keep_retains_the_newest_copies_and_removes_the_rest(
         "P0001 Alpha [draft].20260101-000002.tar.gz",
         "P0001 Alpha [draft].20260101-000003.tar.gz",
     ]
-    versions = (g.read_tombstone(folder) or {})["archive"]["versions"]  # type: ignore[index]
+    versions = (tombstone.read_tombstone(folder) or {})["archive"]["versions"]  # type: ignore[index]
     assert [v["name"] for v in versions] == list(reversed(objects))
 
     deleted = [call[1] for call in calls if call[0] == "deletefile"]
@@ -2024,7 +2024,7 @@ def test_a_rename_between_pushes_does_not_invert_the_version_index(
     assert run("push", "P1", "--remote", remote, "--keep", 2, "--path", archive).exit_code == 0
 
     folder = archive / "Project" / "P0001 Aardvark"
-    versions = (g.read_tombstone(folder) or {})["archive"]["versions"]  # type: ignore[index]
+    versions = (tombstone.read_tombstone(folder) or {})["archive"]["versions"]  # type: ignore[index]
     assert [v["name"] for v in versions] == [
         "P0001 Aardvark.20260101-000003.tar.gz",
         "P0001 Alpha [draft].20260101-000002.tar.gz",
@@ -2033,7 +2033,7 @@ def test_a_rename_between_pushes_does_not_invert_the_version_index(
     deleted = [Path(call[1]).name for call in calls if call[0] == "deletefile"]
     assert deleted == ["P0001 Alpha [draft].20260101-000001.tar.gz"]
     # And the newest is what a bare restore reaches for.
-    arch = (g.read_tombstone(folder) or {})["archive"]
+    arch = (tombstone.read_tombstone(folder) or {})["archive"]
     assert g.select_version(arch, None)["name"] == "P0001 Aardvark.20260101-000003.tar.gz"  # type: ignore[arg-type]
 
 
@@ -2062,7 +2062,7 @@ def test_prune_does_not_retry_a_delete_it_already_made(
     assert "Could not remove" not in res.stderr
 
     folder = archive / "Project" / "P0001 Beta"
-    meta = g.read_tombstone(folder) or {}
+    meta = tombstone.read_tombstone(folder) or {}
     assert len(meta["archive"]["versions"]) == 1  # type: ignore[index]
     assert "Removed 1 older copy" in res.stdout
 
@@ -2107,7 +2107,7 @@ def test_a_failed_prune_warns_and_keeps_the_entry_for_next_time(
     res = run("push", "P1", "--remote", remote, "--path", archive)
     assert res.exit_code == 0
     assert "Could not remove" in res.stderr
-    versions = (g.read_tombstone(folder) or {})["archive"]["versions"]  # type: ignore[index]
+    versions = (tombstone.read_tombstone(folder) or {})["archive"]["versions"]  # type: ignore[index]
     assert len(versions) == 2
 
 
@@ -2211,7 +2211,7 @@ def test_verify_flags_an_unreadable_archive_format(archive: Path) -> None:
     """Better a verify error than a confusing failure at extraction time."""
     run("create", "P", "Alpha", "--path", archive)
     folder = archive / "Project" / "P0001 Alpha"
-    g.write_tombstone(folder, {"archive": {"format": "tar.br", "versions": []}})
+    tombstone.write_tombstone(folder, {"archive": {"format": "tar.br", "versions": []}})
 
     res = run("verify", "--path", archive)
     assert res.exit_code == 1
@@ -2267,7 +2267,7 @@ def test_offload_aborts_before_deleting_when_the_archive_is_short(
     assert "expected" in res.stderr
     assert calls == []
     assert (folder / "notes.txt").read_text() == "top level\n"
-    assert not g.is_offloaded(folder)
+    assert not tombstone.is_offloaded(folder)
 
 
 def test_pull_over_a_live_folder_warns_before_overwriting(

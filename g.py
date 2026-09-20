@@ -28,7 +28,6 @@ Exit codes:
 """
 
 import hashlib
-import json
 import os
 import re
 import shlex
@@ -50,7 +49,7 @@ from rich.text import Text
 
 # gwarchive.output is imported as a MODULE as well as by name: QUIET is read
 # through it so the read happens at call time, not at import time.
-from gwarchive import clock, output
+from gwarchive import clock, external, output
 from gwarchive.destination import (
     check_no_overwrite,
     check_not_nested,
@@ -59,6 +58,16 @@ from gwarchive.destination import (
     resolve_destination,
     run_fs,
     warn_if_taken,
+)
+from gwarchive.external import (
+    RCLONE_EXCLUDES,
+    get_remotes,
+    is_remote_target,
+    rclone_or_die,
+    rclone_tail,
+    remote_folder_target,
+    remote_root_of,
+    validate_remote_target,
 )
 from gwarchive.naming import (
     CATEGORIES,
@@ -110,6 +119,15 @@ from gwarchive.paths import (
     resolve_prefix,
     transfer_message,
 )
+from gwarchive.tombstone import (
+    _mint,
+    _mstr,
+    get_recorded_remotes,
+    is_offloaded,
+    read_tombstone,
+    read_tombstone_state,
+    write_tombstone,
+)
 
 __version__ = "0.3.0"
 
@@ -126,10 +144,6 @@ app = typer.Typer(
 # would not be true if the codec lived only in JSON.
 ARCHIVE_FORMATS = ("tar.zst", "tar.gz")
 
-# What the per-file rclone mirror must leave behind, so it carries the same set
-# as the tar member filter. Without the second pattern a --no-compress push
-# uploaded the .gwarchive-* namespace that the compressed path never packs.
-RCLONE_EXCLUDES = ["--exclude", TOMBSTONE_NAME, "--exclude", ".gwarchive-*"]
 
 # Read size for the object hash. Big enough that hashing a multi-gigabyte
 # archive is one sequential pass, small enough to stay off the heap.
@@ -151,201 +165,10 @@ DEFAULT_POKEMON = "bulbasaur"
 # --- Paths and prefixes --------------------------------------------------------
 
 
-def is_remote_target(value: str) -> bool:
-    """True when rclone reads this as remote storage rather than as a directory.
-
-    rclone honours a colon only in the first path segment: ``nas:archive``, a
-    bare ``nas:`` and the ``:sftp,host=x:`` connection-string form are remotes,
-    while ``backup/nas:`` and ``~/nas:`` are ordinary directory names -- rclone
-    does not expand ``~`` either. An absolute path is a remote target for our
-    purposes, because ``/Volumes/Backup`` is a local target somebody meant.
-    """
-    stripped = value.strip()
-    head, colon, _ = stripped.partition(":")
-    return stripped.startswith("/") or bool(colon and "/" not in head)
-
-
-def validate_remote_target(target: str, source: str = "--remote", command: str = "push") -> str:
-    """Refuse a remote that rclone would quietly read as a local directory.
-
-    Without a colon in its first segment ``unraid`` is an ordinary relative
-    directory name, so a push lands in ./unraid/ beside wherever g was run and
-    still reports success. That has happened; hence this guard.
-    """
-    value = target.strip()
-    if is_remote_target(value):
-        return value
-    suggestion = f"g.py {command} P1 --remote {value}:" if value and "/" not in value else None
-    raise die(
-        f"{value or '(empty)'} is not a remote target ({source}).\n"
-        "rclone only reads an argument as a remote when a colon comes before the first slash,"
-        " so this would read or write a local directory instead of remote storage.",
-        code=2,
-        fix=suggestion or f"g.py {command} P1 --remote nas:archive",
-    )
-
-
-def get_remotes(remotes: Sequence[str] | None = None, command: str = "push") -> list[str]:
-    """Resolve remote target(s) from CLI options or $GWARCHIVE_REMOTE."""
-    if remotes:
-        return [validate_remote_target(r, command=command) for r in remotes]
-    env_remote = os.environ.get("GWARCHIVE_REMOTE")
-    if env_remote and env_remote.strip():
-        return [validate_remote_target(env_remote, "$GWARCHIVE_REMOTE", command)]
-    raise die(
-        "No remote specified.\nPass --remote, or set $GWARCHIVE_REMOTE once in your shell profile.",
-        code=2,
-        fix=f"g.py {command} P1 --remote nas:archive",
-    )
-
-
-def remote_root_of(target: str) -> str:
-    """The rclone remote name a full target path lives on, e.g. ``nas:``."""
-    return target.split(":", 1)[0] + ":" if ":" in target else target
-
-
-def remote_folder_target(remote_root: str, category: str, folder_name: str) -> str:
-    clean_root = remote_root.rstrip("/")
-    sep = "" if clean_root.endswith(":") else "/"
-    return f"{clean_root}{sep}{category}/{folder_name}"
-
-
 # --- Destination resolution -- shared by mv, cp, rename and oldify -------------
 
 
 # --- Remote sync helpers -------------------------------------------------------
-
-
-def _mstr(data: dict[str, object], key: str, default: str = "") -> str:
-    """A string field out of tombstone JSON, whatever the file actually holds.
-
-    Not ``str(data.get(key, ""))``: a JSON ``null`` is a *present* key, so that
-    returned the string ``"None"`` -- truthy, and past every guard downstream.
-    """
-    value = data.get(key)
-    return value if isinstance(value, str) else default
-
-
-def _mint(data: dict[str, object], key: str) -> int | None:
-    """An integer field, or None. JSON's ``true`` is an ``int``; exclude it."""
-    value = data.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def read_tombstone_state(folder: Path) -> tuple[str, dict[str, object] | None]:
-    """The tombstone, and which of four states it is in.
-
-    ``absent`` / ``corrupt`` / ``not-object`` / ``ok``. ``verify`` needs the
-    distinction to report the right thing, and the sync commands need it
-    because collapsing all four to None makes a *corrupt* tombstone read as
-    *no* tombstone -- which discards the recorded remotes and the whole version
-    index, orphaning every object pruning could otherwise have reclaimed.
-    """
-    meta_file = folder / TOMBSTONE_NAME
-    if not meta_file.is_file():
-        return "absent", None
-    try:
-        data = json.loads(meta_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return "corrupt", None
-    return ("ok", data) if isinstance(data, dict) else ("not-object", None)
-
-
-def read_tombstone(folder: Path) -> dict[str, object] | None:
-    """The tombstone dict, or None when it is absent or unreadable."""
-    return read_tombstone_state(folder)[1]
-
-
-def get_recorded_remotes(meta: dict[str, object] | None) -> list[str]:
-    if not meta:
-        return []
-    raw = meta.get("remotes")
-    if isinstance(raw, list):
-        return [str(r) for r in raw]
-    return []
-
-
-def write_tombstone(folder: Path, data: dict[str, object]) -> None:
-    meta_file = folder / TOMBSTONE_NAME
-    meta_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-
-
-def is_offloaded(folder: Path) -> bool:
-    """True if folder carries metadata with a non-null offloaded_at timestamp."""
-    meta = read_tombstone(folder)
-    return bool(meta and meta.get("offloaded_at"))
-
-
-def run_rclone(
-    args: Sequence[str],
-    *,
-    capture_output: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    """The single boundary between g and rclone.
-
-    One monkeypatchable function per external tool, so tests can assert args
-    without the binary; ``run_zstd`` and ``run_pokeget`` are the other two.
-    """
-    cmd = ["rclone", *args]
-    try:
-        return subprocess.run(
-            cmd,
-            text=True,
-            capture_output=capture_output,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise die(
-            "rclone is not on your PATH.",
-            fix="brew install rclone   # or see https://rclone.org/install/",
-        ) from exc
-
-
-def rclone_tail(proc: subprocess.CompletedProcess[str], limit: int = 4) -> str:
-    """The last few things rclone actually said, or failing that its exit code."""
-    raw = (proc.stderr or proc.stdout or "").strip()
-    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
-    if not lines:
-        return f"rclone exited with code {proc.returncode}"
-    return "\n".join(lines[-limit:])
-
-
-def rclone_or_die(
-    args: Sequence[str],
-    description: str,
-    *,
-    capture_output: bool = False,
-    status: str | None = None,
-    fix: str | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Run rclone and fail with an informative message if nonzero.
-
-    ``status`` draws a spinner for the duration, but only on a real terminal --
-    piped output and --json stay byte-identical to a run without one.
-    """
-    with spinner(status):
-        proc = run_rclone(args, capture_output=capture_output)
-    if proc.returncode != 0:
-        raise die(f"Could not {description}:\n{rclone_tail(proc)}", fix=fix)
-    return proc
-
-
-def run_zstd(
-    args: Sequence[str],
-    *,
-    stdin: int | None = None,
-    stdout: int | None = None,
-) -> subprocess.Popen[bytes]:
-    """The boundary to zstd. A ``Popen``, because the archive is piped
-    through it and never buffered whole."""
-    cmd = ["zstd", *args]
-    try:
-        return subprocess.Popen(cmd, stdin=stdin, stdout=stdout)
-    except FileNotFoundError as exc:
-        raise die(
-            "zstd is not on your PATH.",
-            fix="brew install zstd   # or GWARCHIVE_CODEC=gzip to use the stdlib codec",
-        ) from exc
 
 
 # --- Archive layer -------------------------------------------------------------
@@ -425,10 +248,10 @@ def _tar_stream(path: Path, codec: str, *, write: bool) -> Iterator[tarfile.TarF
 
     doing = "writing" if write else "reading"
     if write:
-        proc = run_zstd(zstd_argv(path), stdin=subprocess.PIPE)
+        proc = external.run_zstd(zstd_argv(path), stdin=subprocess.PIPE)
         stream = proc.stdin
     else:
-        proc = run_zstd(["-d", "-c", "-q", str(path)], stdout=subprocess.PIPE)
+        proc = external.run_zstd(["-d", "-c", "-q", str(path)], stdout=subprocess.PIPE)
         stream = proc.stdout
     if stream is None:
         raise die(f"zstd gave us no stream for {doing} {path.name}")
@@ -653,7 +476,7 @@ def prune_versions(arch: dict[str, object], recorded_dirs: Sequence[str], keep: 
         # that differ can still resolve to the same sibling object.
         failed = False
         for target in dict.fromkeys(remote_archive_object(d, name) for d in recorded_dirs):
-            proc = run_rclone(["deletefile", target], capture_output=True)
+            proc = external.run_rclone(["deletefile", target], capture_output=True)
             if proc.returncode != 0:
                 warn(f"Could not remove {target}:\n{rclone_tail(proc)}")
                 failed = True
@@ -697,18 +520,6 @@ def ensure_scratch_space(need: int, where: Path) -> None:
             f"about {decimal(need)} needed to stage the archive.",
             fix="TMPDIR=/some/larger/volume g.py offload P1",
         )
-
-
-def run_pokeget(args: Sequence[str]) -> subprocess.CompletedProcess[str] | None:
-    """The boundary to pokeget.
-
-    None when it is not installed: the greeting runs at shell startup, so a
-    missing binary has to degrade silently rather than die.
-    """
-    try:
-        return subprocess.run(["pokeget", *args], text=True, check=False)
-    except FileNotFoundError:
-        return None
 
 
 def compress_default() -> bool:
@@ -2479,7 +2290,7 @@ def clears(
     chosen = pokemon or os.environ.get("GWARCHIVE_POKEMON") or DEFAULT_POKEMON
     if console.is_terminal:
         console.clear()
-    if run_pokeget([chosen, "--hide-name"]) is None:
+    if external.run_pokeget([chosen, "--hide-name"]) is None:
         detail("pokeget is not on your PATH; cleared without a greeter.")
 
 
