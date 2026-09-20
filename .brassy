@@ -1,0 +1,94 @@
+# brassy project settings (brassy 0.5.1).
+#
+# brassy does NOT read pyproject.toml. This file must live at the repo root;
+# it is resolved relative to the git root, so `brassy` run from a subdirectory
+# still finds it. Precedence is site -> user -> this file, and then
+# BRASSY_<FIELD> environment variables override all three (verified:
+# BRASSY_FAIL_ON_EMPTY_DIR=false works with no config file present at all).
+#
+# Keys are validated against brassy.templates.settings_template.SettingsTemplate,
+# which is a plain pydantic BaseModel -- extra="ignore". A misspelled setting
+# here is SILENTLY DISCARDED: no error, no warning. That is the opposite of a
+# fragment file, where ChangeItem sets extra="forbid" and `desciption:` is a
+# hard error. Verified both directions: `fail_on_emptydir: false` and
+# `not_a_real_setting: 7` both parsed clean and did nothing.
+
+# The first PR after a release empties changelog/. Without this brassy exits 1
+# on an empty directory and the release-notes check fails for an unrelated
+# reason. Verified: empty dir + default -> exit 1; + this line -> exit 0.
+#
+# CONSEQUENCE, easy to miss: brassy sys.exit(0)s BEFORE it builds anything
+# (CLI.py:334). So `brassy changelog/ -o RELEASE.md` against an emptied
+# changelog/ writes NO file -- it leaves the previous RELEASE.md in place
+# rather than emptying it. Verified: the target did not exist afterwards.
+fail_on_empty_dir: false
+
+# Consumed only by `brassy -c/--get-changed-files` (CLI.py:394), which diffs
+# the working tree against this branch. Unset, brassy tries main, then master,
+# then trunk; naming it is explicit and survives a repo that later grows a
+# `master`. `--base-branch` on the command line overrides it. A branch name
+# that does not exist raises GitError and exits 1 -- it is read, not decorative.
+base_branch: main
+
+# ---------------------------------------------------------------------------
+# Markdown output. VERIFIED ACHIEVABLE via config alone -- no post-processing.
+#
+# The key must be NESTED under `templates:`. SettingsTemplate.templates is a
+# ReleaseTemplate whose single field is `release_template` with
+# alias="release-template". A TOP-LEVEL `release-template:` is silently
+# ignored (extra="ignore", see above) and you get reStructuredText back with
+# no warning. That is the one trap in this file.
+#
+# Placeholders, exhaustive (the two .format() call sites in
+# actions/build_release_notes.py):
+#   {prefix_file} {suffix_file} {release_version} {release_date}
+#   {change_type} {title} {description}
+#   {issue} {issue_number} {issue_url} {file_change} {file}
+#
+# Section keys (header/title/summary/entry/footer) are ARBITRARY labels -- the
+# code does `for _section_name, lines in section.items()`. Only list order
+# matters. Within a section, _split_template_lines splits at the FIRST line
+# containing one of {title} {description} {file_change} {issue} {issue_number}
+# {issue_url}: lines above it are emitted once per category, lines below once
+# per entry. {change_type} and {file} alone do NOT trigger the split, which is
+# why "### {change_type}" renders once per category. A line containing
+# {file_change} is expanded once per file, and empty file entries are filtered
+# out, so no spurious bullets.
+#
+# {issue} is NOT usable here: it is hardcoded RST (`` `#12 <url>`_ ``) for
+# GitHub-style issues. {issue_number}/{issue_url} are the Markdown-safe pair.
+# brassy has no conditionals, so "[{issue_number}]({issue_url})" would render a
+# literal "[]()" on every entry without an issue; a bare {issue_number}
+# degrades to a blank line instead, which is why it is used alone below.
+#
+# Two behaviours no template can change:
+#   - Titles are passed through str.capitalize(), which lowercases everything
+#     after the first character: "fix JSON output in AGENTS.md and g.pyz"
+#     renders as "Fix json output in agents.md and g.pyz". There is no setting
+#     to disable it. Keep acronyms out of fragment titles, or post-process.
+#   - Category order follows the order the YAML fragment files are READ
+#     (recursive walk, sorted), not the order of change_categories. Section
+#     order in the built note is therefore decided by fragment filenames.
+templates:
+  release-template:
+    - header:
+        - "{prefix_file}"
+    - title:
+        - "## {release_version} ({release_date})"
+        - ""
+    - summary:
+        - "- **{change_type}**: {title}"
+    - entry:
+        - ""
+        - "### {change_type}"
+        - ""
+        - "#### {title}"
+        - ""
+        - "{description}"
+        - ""
+        - "{issue_number}"
+        - ""
+        - "- `{file}` ({file_change})"
+    - footer:
+        - ""
+        - "{suffix_file}"

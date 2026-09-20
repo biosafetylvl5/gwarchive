@@ -1,0 +1,51 @@
+enhancement:
+  - title: "Install as a package, or run the self-contained g.pyz"
+    description: |
+      The tool is now `gwarchive` on your PATH rather than a `g.py` you fetch
+      and run. Install it with `uv tool install gwarchive` or `pipx install
+      gwarchive`.
+
+      If you liked having one file you could drop anywhere, that still exists:
+      `g.pyz` is a self-contained archive that vendors typer and rich, needs no
+      install, and runs on any Python 3.11 or newer. It is built and checksummed
+      by CI.
+
+      Nothing about the archive format, the naming standard, or the on-disk
+      tombstones changed. An archive managed by the previous version is read and
+      written identically by this one.
+    files:
+      added:
+        - src/gwarchive/
+        - pyproject.toml
+        - scripts/build_zipapp.py
+      deleted:
+        - g.py
+      modified:
+        - .github/workflows/
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+removal:
+  - title: "The install prompt for missing dependencies is gone"
+    description: |
+      Running gwarchive on an interpreter without typer and rich no longer
+      offers to `pip install` them and re-exec. There are three supported ways
+      to get a working tool now -- a package install, the zipapp, or `uv run`
+      in a checkout -- and all three have the dependencies already.
+    files:
+      deleted:
+        - g.py
+      added: []
+      modified: []
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
