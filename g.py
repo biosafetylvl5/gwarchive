@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["typer", "rich"]
-# ///
 """
 gwarchive - A CLI tool for managing files according to the GWArchive standard.
 
 Categories are P/R/M/A/O -> Project/Recurring/Material/Archive/Old.
 
 Installing:
-    This file is the whole tool. Fetch it and run it:
+    uv tool install gwarchive       # or: pipx install gwarchive
+    gwarchive --help
 
-        wget <url-to>/g.py && chmod +x g.py
-        uv run g.py --help          # uv/pipx read the inline metadata above
-        python3 g.py --help         # or, on a bare Python: pip install typer rich
+    Or run the self-contained zipapp, which vendors its dependencies and needs
+    no install at all:
 
-    Run on a Python without typer/rich installed, it offers to install them.
+        ./g.pyz --help
 
 A prefix (``P0001``) is a permanent identifier. It is allocated once, it is
 never reissued, and it travels with the folder across category moves -- so a
@@ -48,48 +44,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
-try:
-    import typer
-    from rich import box
-    from rich.console import Console
-    from rich.filesize import decimal
-    from rich.panel import Panel
-    from rich.status import Status
-    from rich.table import Table
-    from rich.text import Text
-except ModuleNotFoundError:
-    # The no-dependencies branch: a wget'd g.py on a bare Python lands here.
-    # Stdlib only -- rich is exactly what is missing -- and everything goes to
-    # stderr so `g.py cd`-style command substitution never eats a prompt.
-    print("gwarchive needs the 'typer' and 'rich' packages, which are not installed.", file=sys.stderr)
-    pip_cmd = [sys.executable, "-m", "pip", "install", "typer", "rich"]
-
-    # Guard against an infinite re-exec loop if pip succeeds but packages
-    # remain unimportable (e.g. site-packages not on sys.path).
-    if os.environ.get("_GWARCHIVE_REEXEC"):
-        print(
-            "   pip install ran but typer/rich are still not importable in this Python.",
-            file=sys.stderr,
-        )
-        print(f"   check:  {sys.executable} -m pip list", file=sys.stderr)
-        raise SystemExit(1) from None
-
-    if sys.stdin.isatty() and sys.stderr.isatty():
-        print(f"   install now with:  {' '.join(pip_cmd)}", file=sys.stderr)
-        try:
-            answer = input("Install them now? [y/N] ")
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        if answer.strip().lower() in ("y", "yes"):
-            if subprocess.run(pip_cmd, check=False).returncode == 0:
-                os.environ["_GWARCHIVE_REEXEC"] = "1"
-                # Re-exec so the original command runs against the fresh install.
-                os.execv(sys.executable, [sys.executable, *sys.argv])
-            print("install failed; see pip's output above.", file=sys.stderr)
-            raise SystemExit(1) from None
-    print("   try:  pip install typer rich", file=sys.stderr)
-    print("   or:   uv run g.py ...   (uv installs them automatically)", file=sys.stderr)
-    raise SystemExit(1) from None
+import typer
+from rich import box
+from rich.console import Console
+from rich.filesize import decimal
+from rich.panel import Panel
+from rich.status import Status
+from rich.table import Table
+from rich.text import Text
 
 __version__ = "0.3.0"
 

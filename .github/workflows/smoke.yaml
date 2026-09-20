@@ -17,13 +17,16 @@ jobs:
       - run: python3 -m pip install --upgrade pip typer rich
       - name: Help renders
         run: python3 g.py --help
-      # The wget-install path: uv reads the PEP 723 inline metadata at the top
-      # of g.py and builds the environment itself. The pip install above has
-      # already run, so what makes this honest is uv's *isolation* from system
-      # site-packages, not the absence of a prior install.
+      # A `uv run --no-project g.py --help` leg used to sit here, proving the
+      # PEP 723 wget-install path. That path is gone, and the zipapp replaces
+      # it. Its comment recorded the principle the replacement still needs, so
+      # the principle is kept and the leg is not: what made that leg honest was
+      # uv's *isolation* from system site-packages, NOT the absence of a prior
+      # install -- the pip install above had already run. A zipapp leg that runs
+      # inside this job's environment therefore proves nothing; it would borrow
+      # typer and rich from site-packages. Run it under `uv run --no-project`
+      # or a bare interpreter, or do not bother running it.
       - uses: astral-sh/setup-uv@v5
-      - name: uv run g.py --help (no pre-install)
-        run: uv run --no-project g.py --help
       # --path on every line is load-bearing, not decoration: without it these
       # commands write to the runner's ~/gwarchive, and the same habit is what
       # keeps a stray local run away from a real archive.

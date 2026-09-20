@@ -9,11 +9,9 @@ command that forgets ``--path`` still cannot reach the real ~/gwarchive.
 
 import io
 import json
-import os
 import re
 import shutil
 import subprocess
-import sys
 import tarfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -242,52 +240,6 @@ def test_clears_survives_a_missing_pokeget(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(g, "run_pokeget", lambda args: None)
     result = run("clears")
     assert result.exit_code == 0
-
-
-def test_pep723_block_declares_the_dependencies() -> None:
-    """The inline script metadata is what makes `uv run g.py` work after a wget."""
-    source = Path(g.__file__).read_text()
-    match = re.search(r"^# /// script$(.*?)^# ///$", source, re.MULTILINE | re.DOTALL)
-    assert match is not None
-    block = match.group(1)
-    assert '"typer"' in block
-    assert '"rich"' in block
-    assert 'requires-python = ">=3.11"' in block
-
-
-def test_bare_python_gets_a_pip_hint_not_a_traceback(tmp_path: Path) -> None:
-    """The no-dependencies branch: run g.py where typer/rich can't import."""
-    shim = tmp_path / "shims"
-    shim.mkdir()
-    for name in ("typer", "rich"):
-        (shim / f"{name}.py").write_text("raise ModuleNotFoundError\n")
-    proc = subprocess.run(
-        [sys.executable, str(Path(g.__file__)), "--help"],
-        env={**os.environ, "PYTHONPATH": str(shim)},
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 1
-    assert "pip install typer rich" in proc.stderr
-    assert "Traceback" not in proc.stderr
-    assert proc.stdout == ""
-
-
-def test_bare_python_reexec_guard_prevents_infinite_loop(tmp_path: Path) -> None:
-    """If _GWARCHIVE_REEXEC is already set and imports still fail, abort immediately."""
-    shim = tmp_path / "shims"
-    shim.mkdir()
-    for name in ("typer", "rich"):
-        (shim / f"{name}.py").write_text("raise ModuleNotFoundError\n")
-    proc = subprocess.run(
-        [sys.executable, str(Path(g.__file__)), "--help"],
-        env={**os.environ, "PYTHONPATH": str(shim), "_GWARCHIVE_REEXEC": "1"},
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 1
-    assert "still not importable" in proc.stderr
-    assert "Traceback" not in proc.stderr
 
 
 def test_list_shows_a_prefix_you_can_feed_back_in(archive: Path) -> None:
