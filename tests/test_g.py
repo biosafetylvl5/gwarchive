@@ -20,7 +20,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 import g
-from gwarchive import clock, external, naming, output, paths, tombstone
+from gwarchive import clock, external, naming, output, paths, sync, tarball, tombstone
 
 runner = CliRunner()
 
@@ -1683,7 +1683,7 @@ def rclone_local(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 @pytest.fixture
 def gzip_codec(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the stdlib codec, so the real archive path runs with no binary."""
-    monkeypatch.setattr(g, "pick_codec", lambda: "tar.gz")
+    monkeypatch.setattr(tarball, "pick_codec", lambda: "tar.gz")
 
 
 @pytest.fixture
@@ -1899,7 +1899,7 @@ def test_extraction_refuses_members_that_escape_the_folder(tmp_path: Path) -> No
     dest = tmp_path / "dest"
     dest.mkdir()
 
-    assert g.extract_archive(obj, dest, "tar.gz") == 1
+    assert tarball.extract_archive(obj, dest, "tar.gz") == 1
     assert [p.name for p in dest.rglob("*")] == ["good.txt"]
     assert not (tmp_path / "escape.txt").exists()
     assert not (tmp_path / "up.txt").exists()
@@ -1913,7 +1913,7 @@ def test_extraction_drops_reserved_members(tmp_path: Path) -> None:
     dest.mkdir()
     (dest / naming.TOMBSTONE_NAME).write_text('{"keep": "me"}')
 
-    assert g.extract_archive(obj, dest, "tar.gz") == 1
+    assert tarball.extract_archive(obj, dest, "tar.gz") == 1
     assert (dest / naming.TOMBSTONE_NAME).read_text() == '{"keep": "me"}'
     assert not (dest / ".gwarchive-other").exists()
 
@@ -2034,7 +2034,7 @@ def test_a_rename_between_pushes_does_not_invert_the_version_index(
     assert deleted == ["P0001 Alpha [draft].20260101-000001.tar.gz"]
     # And the newest is what a bare restore reaches for.
     arch = (tombstone.read_tombstone(folder) or {})["archive"]
-    assert g.select_version(arch, None)["name"] == "P0001 Aardvark.20260101-000003.tar.gz"  # type: ignore[arg-type]
+    assert tarball.select_version(arch, None)["name"] == "P0001 Aardvark.20260101-000003.tar.gz"  # type: ignore[arg-type]
 
 
 def test_prune_does_not_retry_a_delete_it_already_made(
@@ -2164,20 +2164,20 @@ def test_push_dry_run_creates_no_archive_and_calls_no_rclone(
 def test_pick_codec_prefers_zstd_and_falls_back_to_gzip(monkeypatch: pytest.MonkeyPatch) -> None:
     """gzip is the fallback, not the default -- and the env can force either."""
     monkeypatch.setattr(shutil, "which", lambda _name: "/opt/homebrew/bin/zstd")
-    assert g.pick_codec() == "tar.zst"
+    assert tarball.pick_codec() == "tar.zst"
 
     monkeypatch.setattr(shutil, "which", lambda _name: None)
-    assert g.pick_codec() == "tar.gz"
+    assert tarball.pick_codec() == "tar.gz"
 
     monkeypatch.setenv("GWARCHIVE_CODEC", "zstd")
-    assert g.pick_codec() == "tar.zst"
+    assert tarball.pick_codec() == "tar.zst"
     monkeypatch.setenv("GWARCHIVE_CODEC", "gzip")
-    assert g.pick_codec() == "tar.gz"
+    assert tarball.pick_codec() == "tar.gz"
 
 
 def test_zstd_argv_carries_the_flags_streaming_needs() -> None:
     """-f so it never prompts, -q so it never fights the spinner."""
-    assert g.zstd_argv(Path("/tmp/out.tar.zst")) == [
+    assert tarball.zstd_argv(Path("/tmp/out.tar.zst")) == [
         "-T0",
         "-3",
         "-q",
@@ -2196,13 +2196,13 @@ def test_zstd_round_trips_a_real_archive(tmp_path: Path) -> None:
     (src / "b.bin").write_bytes(b"\x01\x02" * 4096)
     obj = tmp_path / "out.tar.zst"
 
-    members, raw = g.create_archive(src, obj, "tar.zst")
-    g.verify_archive(obj, "tar.zst", members)
+    members, raw = tarball.create_archive(src, obj, "tar.zst")
+    tarball.verify_archive(obj, "tar.zst", members)
     assert (members, raw) == (3, 8201)
 
     dest = tmp_path / "dest"
     dest.mkdir()
-    assert g.extract_archive(obj, dest, "tar.zst") == members
+    assert tarball.extract_archive(obj, dest, "tar.zst") == members
     assert (dest / "sub" / "a.txt").read_text() == "streamed\n"
     assert (dest / "b.bin").read_bytes() == (src / "b.bin").read_bytes()
 
@@ -2254,13 +2254,13 @@ def test_offload_aborts_before_deleting_when_the_archive_is_short(
     calls = rclone_local
     folder = sample
 
-    real_create = g.create_archive
+    real_create = tarball.create_archive
 
     def short_count(source: Path, out: Path, codec: str) -> tuple[int, int]:
         members, total = real_create(source, out, codec)
         return members + 1, total
 
-    monkeypatch.setattr(g, "create_archive", short_count)
+    monkeypatch.setattr(tarball, "create_archive", short_count)
 
     res = run("offload", "P1", "--remote", tmp_path / "remote", "--yes", "--path", archive)
     assert res.exit_code == 1
@@ -2339,7 +2339,9 @@ def test_offload_prompt_states_the_scratch_it_needs(
     # --json document, and its wrapping depends on the terminal width.
     folder = archive / "Project" / "P0001 Alpha [draft]"
     size, count = paths.compute_folder_stats(folder)
-    summary = g.offload_summary([("Project", folder, size, count)], ["nas:archive"], archive, "tar.gz").plain
+    summary = sync.offload_summary(
+        [("Project", folder, size, count)], ["nas:archive"], archive, "tar.gz"
+    ).plain
     assert "packs" in summary and "one tar.gz object per folder" in summary
     assert "needs" in summary and "$TMPDIR" in summary
     assert "frees" in summary

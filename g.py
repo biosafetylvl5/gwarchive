@@ -27,17 +27,13 @@ Exit codes:
        tombstone value the tool refuses before acting on it
 """
 
-import hashlib
 import os
 import re
 import shlex
 import shutil
-import subprocess
 import sys
-import tarfile
 import tempfile
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -49,7 +45,7 @@ from rich.text import Text
 
 # gwarchive.output is imported as a MODULE as well as by name: QUIET is read
 # through it so the read happens at call time, not at import time.
-from gwarchive import clock, external, output
+from gwarchive import clock, external, output, tarball
 from gwarchive.destination import (
     check_no_overwrite,
     check_not_nested,
@@ -62,9 +58,7 @@ from gwarchive.destination import (
 from gwarchive.external import (
     RCLONE_EXCLUDES,
     get_remotes,
-    is_remote_target,
     rclone_or_die,
-    rclone_tail,
     remote_folder_target,
     remote_root_of,
     validate_remote_target,
@@ -78,7 +72,6 @@ from gwarchive.naming import (
     SUBFOLDER_RE,
     TOMBSTONE_NAME,
     _reserved_member,
-    category_letter_for,
     folder_descriptor,
     folder_prefix,
     matches_pattern,
@@ -86,7 +79,6 @@ from gwarchive.naming import (
 )
 from gwarchive.output import (
     INDENT,
-    LABEL_WIDTH,
     STYLES,
     _decorate,
     caption,
@@ -119,9 +111,28 @@ from gwarchive.paths import (
     resolve_prefix,
     transfer_message,
 )
+from gwarchive.sync import (
+    carry_remotes,
+    compress_default,
+    ensure_scratch_space,
+    keep_default,
+    offload_summary,
+    pull_archive,
+    resolve_fetch_source,
+    resolve_sync_targets,
+    stage_archive,
+)
+from gwarchive.tarball import (
+    ARCHIVE_FORMATS,
+    archive_meta_of,
+    prune_versions,
+    record_version,
+    remote_archive_object,
+    select_version,
+    verify_archive,
+    would_prune,
+)
 from gwarchive.tombstone import (
-    _mint,
-    _mstr,
     get_recorded_remotes,
     is_offloaded,
     read_tombstone,
@@ -137,17 +148,6 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-
-# The archive formats push and offload can write. The extension is deliberately
-# the codec's own: lose the tombstone entirely and
-# ``zstd -d < x.tar.zst | tar -tvf -`` is still a complete recovery path, which
-# would not be true if the codec lived only in JSON.
-ARCHIVE_FORMATS = ("tar.zst", "tar.gz")
-
-
-# Read size for the object hash. Big enough that hashing a multi-gigabyte
-# archive is one sequential pass, small enough to stay off the heap.
-HASH_CHUNK = 1 << 20
 
 # The sprite ``clears`` greets with when neither the positional argument nor
 # $GWARCHIVE_POKEMON says otherwise.
@@ -172,594 +172,6 @@ DEFAULT_POKEMON = "bulbasaur"
 
 
 # --- Archive layer -------------------------------------------------------------
-
-
-def pick_codec() -> str:
-    """The archive format to write: zstd when its binary is there, gzip otherwise.
-
-    ``$GWARCHIVE_CODEC`` forces one. This function is the seam tests
-    monkeypatch, because forcing gzip runs the whole create/verify/extract path
-    with no external binary at all -- and CI has neither zstd nor rclone.
-    """
-    forced = os.environ.get("GWARCHIVE_CODEC", "").strip().lower()
-    if forced in ("zstd", "zst", "tar.zst"):
-        return "tar.zst"
-    if forced in ("gzip", "gz", "tar.gz"):
-        return "tar.gz"
-    return "tar.zst" if shutil.which("zstd") else "tar.gz"
-
-
-def zstd_argv(out: Path) -> list[str]:
-    """Compression flags for a streamed write. Pure, so tests need no binary.
-
-    ``-f`` because zstd otherwise refuses an existing output and prompts on a
-    TTY, ``-q`` because its progress meter would fight the Rich spinner, and
-    ``-3`` spelled out because that speed/ratio point is a decision here: the
-    network is the bottleneck this feature exists to relieve, not the CPU.
-    """
-    return ["-T0", "-3", "-q", "-f", "-o", str(out)]
-
-
-def archive_object_name(folder_name: str, stamp: str, codec: str) -> str:
-    """``P0001 Alpha.20260909-101530.tar.zst``."""
-    return f"{folder_name}.{stamp}.{codec}"
-
-
-def remote_archive_object(recorded_dir: str, object_name: str) -> str:
-    """The object path *beside* a folder's remote directory, not inside it.
-
-    See AGENTS.md, "Remote layout", for the layout this produces and why
-    sibling placement is what keeps a later --no-compress push from dragging a
-    stale tarball down into the live folder.
-    """
-    base = recorded_dir.rstrip("/")
-    head, sep, _ = base.rpartition("/")
-    return f"{head}{sep}{object_name}" if sep else object_name
-
-
-def file_sha256(path: Path) -> str:
-    """SHA-256 of a file, streamed a chunk at a time."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-@contextmanager
-def _tar_stream(path: Path, codec: str, *, write: bool) -> Iterator[tarfile.TarFile]:
-    """A sequential tar over either codec, in either direction.
-
-    A zstd stream lives on a pipe, so the archive is non-seekable: ``r|`` and
-    ``w|`` only, and no ``getmembers()`` up front. gzip goes through the same
-    shape so neither the add loop nor the vetting loop is written twice.
-
-    Two orderings here are load-bearing and both are recorded in AGENTS.md,
-    "Subprocess boundaries": ``tarfile`` closes *inside* the try, before the
-    pipe, and the gzip write stays ``w:gz`` rather than ``w|gz``.
-    """
-    if codec != "tar.zst":
-        with tarfile.open(path, "w:gz" if write else "r|gz") as archive:
-            yield archive
-        return
-
-    doing = "writing" if write else "reading"
-    if write:
-        proc = external.run_zstd(zstd_argv(path), stdin=subprocess.PIPE)
-        stream = proc.stdin
-    else:
-        proc = external.run_zstd(["-d", "-c", "-q", str(path)], stdout=subprocess.PIPE)
-        stream = proc.stdout
-    if stream is None:
-        raise die(f"zstd gave us no stream for {doing} {path.name}")
-    try:
-        with tarfile.open(fileobj=stream, mode="w|" if write else "r|") as archive:
-            yield archive
-    finally:
-        # Closing the pipe is what tells zstd to finish; waiting is what stops
-        # a tarfile error from leaking a process on it.
-        stream.close()
-        proc.wait()
-    if proc.returncode != 0:
-        raise die(f"zstd exited with code {proc.returncode} {doing} {path.name}")
-
-
-def create_archive(folder: Path, out: Path, codec: str) -> tuple[int, int]:
-    """Pack ``folder`` into ``out``. Returns (member count, uncompressed bytes).
-
-    Members are relative to the folder -- ``sub/f.txt``, never
-    ``P0001 Alpha/sub/f.txt``. Rooting them at the folder name would bake the
-    name into the archive, so ``rename`` would break the round trip, and would
-    force extraction one level up into the category directory. Relative members
-    mean extraction targets the folder itself and can never write above it.
-
-    The counts come from this walk, the one that writes the archive, rather
-    than from a second ``compute_folder_stats`` pass: two walks can disagree
-    when a sync daemon touches the tree mid-flight, and ``stat`` counts a
-    symlink as its target's bytes where tar stores a 0-byte link member.
-    """
-    members = 0
-    total = 0
-
-    def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
-        nonlocal members, total
-        # Returning None prunes a directory subtree whole, so a .gwarchive-
-        # cache directory is skipped along with everything under it.
-        if any(_reserved_member(part) for part in info.name.split("/")):
-            return None
-        members += 1
-        total += info.size
-        return info
-
-    def _add_children(archive: tarfile.TarFile, items: Sequence[Path]) -> None:
-        # A sync daemon touching the tree mid-walk -- the exact case this
-        # function's counting is written for -- raises out of tarfile.add. Every
-        # other failure in this layer is a message with a way out; this one was
-        # a traceback.
-        try:
-            for item in items:
-                archive.add(item, arcname=item.name, filter=keep)
-        except OSError as exc:
-            raise die(
-                f"Could not pack {folder.name}: {exc.strerror or exc}",
-                fix=f'chmod -R +r "{folder}"   # then retry; nothing has been deleted',
-            ) from exc
-
-    with _tar_stream(out, codec, write=True) as archive:
-        _add_children(archive, sorted(folder.iterdir(), key=lambda item: item.name))
-
-    return members, total
-
-
-def verify_archive(path: Path, codec: str, expected_members: int) -> None:
-    """Read the finished archive back and confirm it holds what we packed.
-
-    Only ``offload`` calls this. It is a full re-read, and offload is the one
-    command that deletes the originals, so a silently truncated archive would
-    be data loss rather than an inconvenience. ``push`` keeps the local copy
-    and skips the pass.
-    """
-    found = 0
-    with _tar_stream(path, codec, write=False) as archive:
-        for _ in archive:
-            found += 1
-    if found != expected_members:
-        raise die(
-            f"{path.name} holds {found} member(s), expected {expected_members}.",
-            fix="Retry the offload -- nothing local has been deleted.",
-        )
-
-
-def _vet_member(info: tarfile.TarInfo, folder: Path) -> bool:
-    """True when a member is safe to write under ``folder``.
-
-    Run on every member on every Python, not just where ``filter="data"`` is
-    missing. ``tarfile``'s own filter landed in 3.12 and was backported to
-    3.11.4, while the PEP 723 pin admits 3.11.0 -- and CI resolves '3.11' to
-    the newest patch release, so the vulnerable range is exactly the range
-    nothing exercises.
-
-    Symlinks and hardlinks are refused rather than followed. That makes
-    push -> pull not round-trip faithful for links, which matches today:
-    ``rclone copy`` skips them too unless given ``-L``.
-    """
-    name = info.name
-    if not name or name.startswith("/"):
-        return False
-    if not (info.isfile() or info.isdir()):
-        return False
-    parts = name.split("/")
-    if any(part == ".." for part in parts):
-        return False
-    if any(_reserved_member(part) for part in parts):
-        return False
-    root = folder.resolve()
-    dest = (root / name).resolve()
-    return dest == root or root in dest.parents
-
-
-def extract_archive(path: Path, folder: Path, codec: str) -> int:
-    """Unpack ``path`` into ``folder``. Returns the number of members written.
-
-    Vetted and extracted one member at a time, because the stream is not
-    seekable. An unsafe or reserved member is dropped with a warning rather
-    than aborting a restore that is otherwise sound.
-    """
-    written = 0
-    refused = 0
-    with _tar_stream(path, codec, write=False) as archive:
-        for info in archive:
-            if not _vet_member(info, folder):
-                refused += 1
-                continue
-            if hasattr(tarfile, "data_filter"):
-                archive.extract(info, path=str(folder), filter="data")
-            else:  # pragma: no cover -- Python 3.11.0 to 3.11.3
-                archive.extract(info, path=str(folder))
-            written += 1
-    if refused:
-        noun = "member" if refused == 1 else "members"
-        warn(f"Skipped {refused} unsafe or reserved {noun} in {path.name}")
-    return written
-
-
-def archive_meta_of(meta: dict[str, object] | None) -> dict[str, object] | None:
-    """The archive block from a tombstone, or None for a per-file remote.
-
-    Absence of the key is the only archived-or-not signal in the tool: there is
-    no remote listing anywhere, so the tombstone *is* the version index.
-    """
-    if not meta:
-        return None
-    raw = meta.get("archive")
-    if not isinstance(raw, dict):
-        return None
-    fmt = raw.get("format")
-    if fmt not in ARCHIVE_FORMATS:
-        raise die(
-            f"{TOMBSTONE_NAME} names an archive format this build cannot read: {fmt!r}",
-            code=2,
-            fix="g.py verify   # then repair or remove the archive block",
-        )
-    return raw
-
-
-def archive_versions(arch: dict[str, object] | None) -> list[dict[str, object]]:
-    """The recorded objects for an archived folder, newest first."""
-    if not arch:
-        return []
-    raw = arch.get("versions")
-    if not isinstance(raw, list):
-        return []
-    return [entry for entry in raw if isinstance(entry, dict)]
-
-
-def select_version(arch: dict[str, object], spec: str | None) -> dict[str, object]:
-    """Pick a recorded version: the newest by default, else an index or a name.
-
-    Without this, --keep would be storage with no way to read it back.
-    """
-    versions = archive_versions(arch)
-    if not versions:
-        raise die(
-            f"{TOMBSTONE_NAME} records an archive but no versions of it.",
-            fix="g.py push P1",
-        )
-    if spec is None:
-        return versions[0]
-    wanted = spec.strip()
-    if wanted.isdecimal():
-        index = int(wanted)
-        if 1 <= index <= len(versions):
-            return versions[index - 1]
-    for entry in versions:
-        if _mstr(entry, "name") == wanted:
-            return entry
-    listing = "\n".join(f"  {i}  {entry.get('name')}" for i, entry in enumerate(versions, 1))
-    raise die(
-        f"No such version: {wanted}\nRecorded versions, newest first:\n{listing}",
-        code=2,
-        fix="g.py restore P1 --version 1",
-    )
-
-
-def prune_versions(arch: dict[str, object], recorded_dirs: Sequence[str], keep: int) -> int:
-    """Drop all but the newest ``keep`` objects. Returns how many went.
-
-    Only names already recorded in ``versions`` are ever deleted, and a failed
-    delete warns and keeps its entry for the next push -- see AGENTS.md,
-    "Retention".
-
-    ``versions`` arrives newest-first from ``record_version`` and stays that
-    way: survivors keep their order, and a failed delete goes back on the end.
-    **Do not sort it by object name** -- ``archive_object_name`` puts the
-    *folder* name first, so one ``rename`` inverts the index. See AGENTS.md,
-    "Retention".
-    """
-    if keep <= 0:
-        return 0
-    versions = archive_versions(arch)
-    surplus = versions[keep:]
-    if not surplus:
-        return 0
-
-    survivors = list(versions[:keep])
-    removed = 0
-    for entry in surplus:
-        name = _mstr(entry, "name")
-        if not name:
-            continue
-        # Deduplicated: `recorded_dirs` is a historical union, and entries
-        # that differ can still resolve to the same sibling object.
-        failed = False
-        for target in dict.fromkeys(remote_archive_object(d, name) for d in recorded_dirs):
-            proc = external.run_rclone(["deletefile", target], capture_output=True)
-            if proc.returncode != 0:
-                warn(f"Could not remove {target}:\n{rclone_tail(proc)}")
-                failed = True
-        if failed:
-            survivors.append(entry)
-        else:
-            removed += 1
-    arch["versions"] = survivors
-    return removed
-
-
-def would_prune(existing: dict[str, object], keep: int) -> int:
-    """How many copies a real push would remove, counted from the dry-run side.
-
-    Pruning happens *after* the new version is recorded, so a dry-run that
-    measured the current list would report one too few -- and a --dry-run that
-    understates what the real run deletes is worse than no output at all.
-    """
-    if keep <= 0:
-        return 0
-    prior = existing.get("archive")
-    incoming = len(archive_versions(prior if isinstance(prior, dict) else None)) + 1
-    return max(incoming - keep, 0)
-
-
-def ensure_scratch_space(need: int, where: Path) -> None:
-    """Refuse to start an offload that cannot stage its own archive.
-
-    The archive is written in full before anything local is deleted -- that
-    ordering is what keeps a failed transfer from losing data -- so offloading
-    a large folder briefly needs room for a second copy, on whatever volume
-    $TMPDIR points at. Fatal here, rather than a half-written archive later.
-    """
-    try:
-        free = shutil.disk_usage(where).free
-    except OSError:
-        return
-    if free < need:
-        raise die(
-            f"Not enough scratch space in {where}: {decimal(free)} free, "
-            f"about {decimal(need)} needed to stage the archive.",
-            fix="TMPDIR=/some/larger/volume g.py offload P1",
-        )
-
-
-def compress_default() -> bool:
-    """On by default: one object beats thousands.
-
-    ``$GWARCHIVE_COMPRESS=0`` per shell, ``--no-compress`` per command.
-    """
-    return os.environ.get("GWARCHIVE_COMPRESS", "").strip().lower() not in ("0", "false", "no", "off")
-
-
-def keep_default(keep: int | None) -> int:
-    """--keep, else $GWARCHIVE_KEEP, else 1.
-
-    One matches the uncompressed path, so retention grows only when asked.
-    """
-    if keep is not None:
-        return max(keep, 0)
-    raw = os.environ.get("GWARCHIVE_KEEP", "").strip()
-    if not raw:
-        return 1
-    if not (raw.isascii() and raw.isdecimal()):
-        # Falling back to 1 here means "delete all but one copy" -- the
-        # opposite of what somebody raising the retention meant to ask for.
-        raise die(
-            f"$GWARCHIVE_KEEP is not a whole number: {raw!r}",
-            code=2,
-            fix="GWARCHIVE_KEEP=2 g.py push P1",
-        )
-    return int(raw)
-
-
-def stage_archive(folder: Path, tmpdir: Path, codec: str, *, as_json: bool) -> tuple[Path, dict[str, object]]:
-    """Write the folder's archive into tmpdir; return it and its version record.
-
-    The spinner is not decoration: compression is the slow step and it runs
-    before any rclone call, so without one a speed-up reads as a freeze.
-    """
-    name = archive_object_name(folder.name, clock.archive_stamp(), codec)
-    staged = tmpdir / name
-    with spinner(f"Compressing {folder.name}", as_json=as_json):
-        members, raw_size = create_archive(folder, staged, codec)
-    entry: dict[str, object] = {
-        "name": name,
-        "format": codec,
-        "pushed_at": clock.now_stamp(),
-        "sha256": file_sha256(staged),
-        "member_count": members,
-        "uncompressed_size": raw_size,
-        "compressed_size": staged.stat().st_size,
-    }
-    return staged, entry
-
-
-def record_version(
-    existing: dict[str, object], entry: dict[str, object], codec: str, keep: int
-) -> dict[str, object]:
-    """The archive block for a tombstone, with this push's version on the front.
-
-    See AGENTS.md, "Tombstones", for the schema and why ``format`` is carried
-    per version as well as on the block.
-    """
-    prior = existing.get("archive")
-    name = _mstr(entry, "name")
-    # The stamp has second resolution, so two pushes inside one second write the
-    # same object name -- the second overwrote the first, so it gets one entry,
-    # not two that a prune would read as a spare copy to delete.
-    versions = [
-        v for v in archive_versions(prior if isinstance(prior, dict) else None) if _mstr(v, "name") != name
-    ]
-    return {"format": codec, "keep": keep, "versions": [entry, *versions]}
-
-
-def pull_archive(
-    src_dir: str,
-    folder: Path,
-    arch: dict[str, object],
-    spec: str | None,
-    *,
-    verb: str,
-    gerund: str,
-    as_json: bool,
-) -> str:
-    """Fetch one recorded object and unpack it into folder. Returns its name.
-
-    The checksum is verified before anything touches the folder, so a corrupt
-    or truncated object leaves an offloaded folder as a clean tombstone rather
-    than half-overwritten -- and the remote copy is still there to retry, or to
-    fall back from with --version 2.
-    """
-    versions = archive_versions(arch)
-    entry = select_version(arch, spec)
-    name = _mstr(entry, "name")
-    # The copy behind this one, if --keep left one, is what a bad object falls
-    # back to. Only worth suggesting when it actually exists.
-    older = versions.index(entry) + 2 if versions.index(entry) + 1 < len(versions) else None
-    codec = _mstr(entry, "format") or _mstr(arch, "format")
-    if codec not in ARCHIVE_FORMATS:
-        raise die(f"{name} names an archive format this build cannot read: {codec!r}", code=2)
-    target = remote_archive_object(src_dir, name)
-
-    with tempfile.TemporaryDirectory(prefix="gwarchive-") as tmp:
-        staged = Path(tmp) / name
-        rclone_or_die(
-            ["copyto", target, str(staged)],
-            f"{verb} {folder.name} from {target}",
-            status=None if as_json else f"{gerund} {folder.name} {symbol('transfer')} local",
-            fix=f"rclone lsd {remote_root_of(target)}",
-        )
-        recorded = _mstr(entry, "sha256")
-        if not recorded:
-            warn(f"{name} carries no recorded checksum; extracting it unverified")
-        else:
-            actual = file_sha256(staged)
-            if actual != recorded:
-                prefix = folder_prefix(folder.name) or folder.name
-                raise die(
-                    f"{name} does not match the checksum recorded for it.\n"
-                    f"expected {recorded}\ngot      {actual}",
-                    fix=(
-                        f"g.py {verb} {prefix} --version {older}"
-                        if older
-                        else f"rclone lsl {remote_root_of(target)}   # this is the only recorded copy"
-                    ),
-                )
-        written = extract_archive(staged, folder, codec)
-
-    expected = _mint(entry, "member_count")
-    if expected is not None and written != expected:
-        warn(f"{folder.name}: extracted {written} member(s) but {name} records {expected}")
-    return name
-
-
-def determine_folder_category(folder: Path, base_path: Path) -> str:
-    try:
-        rel_parts = folder.relative_to(base_path).parts
-        if rel_parts and rel_parts[0] in CATEGORY_NAMES:
-            return rel_parts[0]
-    except ValueError:
-        pass
-    pfx = folder_prefix(folder.name)
-    if pfx and pfx[0] in CATEGORIES:
-        return CATEGORIES[pfx[0]]
-    return "Archive"
-
-
-def resolve_sync_targets(selector: str, base_path: Path, command: str = "push") -> list[tuple[str, Path]]:
-    """Resolve a sync selector (category letter/name or prefix/path) to folders."""
-    letter = category_letter_for(selector)
-    if letter is not None:
-        cat_name = CATEGORIES[letter]
-        cat_dir = base_path / cat_name
-        if not cat_dir.exists():
-            raise die(f"No {cat_name} directory at {base_path}", fix=f"g.py init --path {base_path}")
-        targets = iter_archive_folders(base_path, cat_name)
-        if not targets:
-            raise die(
-                f"No folders found in category {cat_name}",
-                fix=f'g.py create {letter} "Name" --path {base_path}',
-            )
-        return targets
-
-    source_path = locate_source(selector, base_path)
-    if not source_path.is_dir():
-        raise die(f"Target is not a directory: {source_path}")
-
-    # Sync operates on whole top-level folders only. A subfolder pushed on its
-    # own would land flattened at <remote>/<Category>/<name>, and list/stats/
-    # verify never look below the top level, so its tombstone would be
-    # invisible to every scanner.
-    try:
-        parts = source_path.resolve().relative_to(base_path.resolve()).parts
-    except ValueError:
-        parts = ()
-    if len(parts) != 2 or parts[0] not in CATEGORY_NAMES:
-        sub_match = SUBFOLDER_RE.match(source_path.name)
-        parent = sub_match.group(1) if sub_match else selector
-        raise die(
-            f"Sync works on top-level archive folders only; {source_path.name} is not one.",
-            fix=f"g.py {command} {parent}",
-        )
-
-    cat_name = determine_folder_category(source_path, base_path)
-    return [(cat_name, source_path)]
-
-
-def carry_remotes(prev: Sequence[str], folder: Path, base_path: Path) -> list[str]:
-    """The recorded remotes worth carrying into the next transfer.
-
-    Metadata written by a laxer version can name a stray local directory; drop
-    those, so one bad entry does not outlive the transfer that replaces it. A
-    fresh list -- the per-remote loop appends to it as each copy lands.
-    """
-    kept = [r for r in prev if is_remote_target(r)]
-    if len(kept) != len(prev):
-        dropped = len(prev) - len(kept)
-        shown = display(folder, base_path)
-        warn(f"{shown}: ignoring {plural(dropped, 'recorded remote')} rclone would read as local")
-    return kept
-
-
-def offload_summary(
-    measured: Sequence[tuple[str, Path, int, int]],
-    remotes: Sequence[str],
-    base_path: Path,
-    codec: str = "",
-) -> Text:
-    """What is about to be deleted locally, and how much disk that returns.
-
-    The freed figure is the number the decision actually turns on, so it gets
-    its own line rather than being left for the user to add up. When the
-    transfer is compressed, so does the scratch space it needs first -- that is
-    a cost the user should see before answering, not discover mid-run.
-    """
-    count = len(measured)
-    freed = sum(size for _, _, size, _ in measured)
-    width = max((len(display(folder, base_path)) for _, folder, _, _ in measured), default=0)
-
-    summary = Text()
-    summary.append(
-        f"Offload {count} folder{'' if count == 1 else 's'} and DELETE the local files\n\n",
-        style="bold",
-    )
-    for _, folder, size, _ in measured:
-        summary.append(f"{display(folder, base_path):<{width}}  ")
-        summary.append(f"{decimal(size):>9}\n", style=STYLES["label"])
-    summary.append(f"\n{'frees':<{LABEL_WIDTH}}", style=STYLES["label"])
-    summary.append(decimal(freed))
-    if codec:
-        # The scratch requirement is the largest single folder: they are staged
-        # one at a time. Shown as its own line because it is a real cost, and
-        # the volume it lands on ($TMPDIR) may not be the one being freed.
-        summary.append(f"\n{'packs':<{LABEL_WIDTH}}", style=STYLES["label"])
-        summary.append(f"one {codec} object per folder")
-        summary.append(f"\n{'needs':<{LABEL_WIDTH}}", style=STYLES["label"])
-        summary.append(
-            f"{decimal(max((size for _, _, size, _ in measured), default=0))} of scratch in $TMPDIR"
-        )
-    summary.append(f"\n{'to':<{LABEL_WIDTH}}", style=STYLES["label"])
-    summary.append(", ".join(remotes))
-    return summary
 
 
 # --- Parameter validation ------------------------------------------------------
@@ -1266,7 +678,7 @@ def push(
     remotes = get_remotes(remote, "push")
     targets = resolve_sync_targets(selector, base_path, "push")
     # `codec` doubles as the compress flag: pick_codec never returns "".
-    codec = pick_codec() if compress_default() and not no_compress else ""
+    codec = tarball.pick_codec() if compress_default() and not no_compress else ""
     retain = keep_default(keep)
 
     results: list[dict[str, object]] = []
@@ -1411,7 +823,7 @@ def offload(
     remotes = get_remotes(remote, "offload")
     targets = resolve_sync_targets(selector, base_path, "offload")
     # `codec` doubles as the compress flag: pick_codec never returns "".
-    codec = pick_codec() if compress_default() and not no_compress else ""
+    codec = tarball.pick_codec() if compress_default() and not no_compress else ""
     retain = keep_default(keep)
 
     # A whole-category offload skips folders that are already parked, so an
@@ -1576,30 +988,6 @@ def offload(
 
     if as_json:
         emit_json(results)
-
-
-def resolve_fetch_source(
-    remote: str | None,
-    prev_remotes: Sequence[str],
-    category: str,
-    folder_name: str,
-    command: str,
-) -> str:
-    """Where a pull or a restore reads from.
-
-    An explicit --remote wins. Otherwise the tombstone's ``remotes`` list is a
-    historical union that only ever grows, so the *last* usable entry is the
-    current one -- see AGENTS.md, "Retention". Entries a laxer version recorded
-    can be bare local paths; only a list with nothing usable in it is fatal.
-    """
-    if remote:
-        return remote_folder_target(remote, category, folder_name)
-    if prev_remotes:
-        usable = [r for r in prev_remotes if is_remote_target(r)]
-        if usable:
-            return usable[-1]
-        return validate_remote_target(str(prev_remotes[0]), f"recorded in {TOMBSTONE_NAME}", command)
-    return remote_folder_target(get_remotes(None, command)[0], category, folder_name)
 
 
 def fetch_folders(
