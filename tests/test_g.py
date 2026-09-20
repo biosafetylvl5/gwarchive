@@ -20,6 +20,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 import g
+from gwarchive import output
 
 runner = CliRunner()
 
@@ -31,8 +32,11 @@ def isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COLUMNS", "200")
     monkeypatch.setenv("TERM", "dumb")
     # The --quiet/--verbose callback writes module globals; reset between tests.
-    monkeypatch.setattr(g, "QUIET", False)
-    monkeypatch.setattr(g, "VERBOSE", False)
+    # They live in gwarchive.output, and the callback reaches them through
+    # output.set_verbosity() -- patch them where they are defined, not where
+    # they are read, or the reset writes a different module's names.
+    monkeypatch.setattr(output, "QUIET", False)
+    monkeypatch.setattr(output, "VERBOSE", False)
     # Compression settings come from the environment too, so a developer's own
     # shell must not decide what the transfer tests exercise.
     for name in ("GWARCHIVE_COMPRESS", "GWARCHIVE_CODEC", "GWARCHIVE_KEEP"):

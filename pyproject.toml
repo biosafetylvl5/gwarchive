@@ -388,7 +388,12 @@ update_changelog_on_bump = false
 # in silence and all 52 findings come back. So: run it from the repo root, and
 # `paths` is pinned here so `uv run vulture` needs no arguments at all.
 min_confidence = 60
-paths = ["src", "tests"]
+# "g.py" is here TEMPORARILY, for the strangle window, and for the same reason
+# it is in [tool.mypy].files: during the split g.py is the only caller of most
+# of what has been extracted, so without it vulture reports every freshly moved
+# function as dead. Drop it in the commit that deletes g.py -- at which point
+# the finding it stops suppressing is the one worth having.
+paths = ["src", "tests", "g.py"]
 sort_by_size = true
 
 # fnmatch, applied to the decorator's dotted callable ONLY -- vulture strips
