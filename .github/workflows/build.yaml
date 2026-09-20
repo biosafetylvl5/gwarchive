@@ -1,0 +1,110 @@
+# Produces the three distributable shapes and their checksums: an sdist, a
+# wheel, and the g.pyz zipapp that preserves the single-artifact workflow the
+# old g.py provided.
+#
+# This workflow builds and publishes as an artifact. It does not prove the
+# zipapp runs -- smoke.yaml does, on a deliberately bare interpreter, which is
+# the only place that proof means anything.
+#
+# There is no release.yaml and no changelog.yaml, deliberately. With no git
+# remote they can never run, cannot be validated by `act`, and would be wrong by
+# the time there is one. Their inputs (changelog/ fragments, brassy
+# --output-to-console) are exercised locally instead.
+name: Build
+
+on:
+  push:
+    branches: 'main'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # No UV_LOCKED / UV_FROZEN here, for the same measured reason as smoke.yaml:
+  # scripts/build_zipapp.py runs `uv export --frozen`, and on uv 0.12.5
+  # "the argument `UV_LOCKED` (environment variable) cannot be used with
+  # `--frozen`". The lock guarantee lives inside the build script, where the
+  # vendored tree is actually derived, rather than in an env var that would
+  # break it from another file.
+  UV_PYTHON_DOWNLOADS: never
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # 3.11, the floor, not the newest. MEASURED: vendored bytecode is
+      # CPython-version-locked, and `compileall -b` is what makes the zipapp
+      # fast (0.069s vs 0.212s cold start). Built on 3.11 that bytecode is
+      # usable on the floor and merely ignored above it -- zipimport falls back
+      # to the .py in the archive, which is why the build ships BOTH and never
+      # bytecode alone. Built on 3.13 the speedup would land only on 3.13.
+      - uses: actions/setup-python@v7
+        id: python
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Point uv at exactly the interpreter setup-python installed
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      # uv.lock does not pin build backends -- hatchling resolves fresh in an
+      # isolated environment on every build. That is why pyproject.toml carries
+      # `requires = ["hatchling>=1.26"]` rather than leaving it to the lock.
+      - name: Build the sdist and the wheel
+        run: uv build
+
+      # Via zipapp.create_archive() from Python, not `python -m zipapp`: the CLI
+      # exposes only --output/--python/--main/--compress/--info, with no
+      # `filter=`, so it cannot exclude __pycache__, *.dist-info or bin/.
+      # Measured cost of getting __pycache__ in by accident: 4.55 MiB against
+      # 1.70 MiB, for bytes zipimport never reads -- its search order is
+      # ('/__init__.pyc', '/__init__.py', '.pyc', '.py') and it does not look
+      # inside __pycache__ at all.
+      #
+      # Runs before the checksums so SHA256SUMS covers all three artifacts.
+      - name: Build the zipapp
+        run: python3 scripts/build_zipapp.py
+
+      # A one-line guard, not a substitute for smoke.yaml's assertions 5 and 6:
+      # this interpreter is the one that built the archive, so a pass here says
+      # only that the artifact is not obviously broken before it is published.
+      - name: The built archive is not dead on arrival
+        run: ./dist/g.pyz --version
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          # Unquoted globs, so a missing artifact leaves the pattern literal and
+          # sha256sum fails the step rather than silently checksumming two of
+          # the three files.
+          sha256sum -- *.tar.gz *.whl g.pyz > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          cat SHA256SUMS
+
+      # `act` fails HERE, after every real step has passed, unless .actrc
+      # carries `--artifact-server-path /tmp/act-artifacts` -- the same
+      # confusing-late-failure class as the nektos/act#107 PATH workaround it
+      # already documents.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gwarchive-dist-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.whl
+            dist/g.pyz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
