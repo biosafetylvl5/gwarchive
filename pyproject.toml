@@ -326,7 +326,12 @@ testpaths = ["tests"]
 # basenames).
 # --strict-markers, --strict-config: a typo in a marker or in this table is an
 # error, not a silent no-op.
-addopts = "--import-mode=importlib --strict-markers --strict-config"
+addopts = "--strict-markers --strict-config"
+# No --import-mode=importlib. It was added for nested test directories that the
+# split did not need, and under it `from conftest import run` does not resolve:
+# importlib mode does not put the test directory on sys.path. Default prepend
+# mode does, and it is safe here because every test basename is unique -- which
+# is the only thing prepend mode actually requires.
 xfail_strict = true
 # Deliberately NO `pythonpath = ["src"]`. It would put src/ on sys.path
 # directly, so the suite would pass even if [project] or the build backend
