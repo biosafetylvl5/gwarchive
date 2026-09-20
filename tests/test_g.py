@@ -20,7 +20,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 import g
-from gwarchive import output
+from gwarchive import clock, output
 
 runner = CliRunner()
 
@@ -799,7 +799,7 @@ def test_a_category_destination_is_case_insensitive(destination: str, archive: P
 def test_a_lowercase_old_still_retires(archive: Path) -> None:
     run("create", "P", "Alpha", "--path", archive)
     assert run("mv", "P1", "old", "--path", archive).exit_code == 0
-    assert (archive / "Old" / f"{g.today()}-P0001-Alpha").is_dir()
+    assert (archive / "Old" / f"{clock.today()}-P0001-Alpha").is_dir()
     assert not (archive / "Project" / "P0001 old").exists()
 
 
@@ -1964,7 +1964,7 @@ def stamps(monkeypatch: pytest.MonkeyPatch) -> Callable[[Sequence[str]], None]:
 
     def install(values: Sequence[str]) -> None:
         remaining = list(values)
-        monkeypatch.setattr(g, "archive_stamp", lambda: remaining.pop(0))
+        monkeypatch.setattr(clock, "archive_stamp", lambda: remaining.pop(0))
 
     return install
 
