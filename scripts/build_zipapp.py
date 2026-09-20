@@ -73,7 +73,9 @@ def main() -> int:
     with reqs.open("w") as fh:
         subprocess.run(
             ["uv", "export", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes"],
-            check=True, cwd=ROOT, stdout=fh,
+            check=True,
+            cwd=ROOT,
+            stdout=fh,
         )
     _run("uv", "pip", "install", "-r", str(reqs), "--target", str(STAGE), "--no-compile-bytecode", "-q")
     shutil.copytree(ROOT / "src" / "gwarchive", STAGE / "gwarchive")

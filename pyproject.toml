@@ -306,7 +306,7 @@ warn_unreachable = true
 # tests/ under disallow_untyped_defs -- which forces every monkeypatch
 # stand-in to be annotated, fixing for free the signature-drift concern
 # .ruff.toml raises when it declines ARG.
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 # `warn_unused_ignores` catches a `# type: ignore` that its error moved out
 # from under during the split. That is exactly the residue a split creates,
 # and it is invisible without this.
