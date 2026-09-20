@@ -42,6 +42,7 @@ from gwarchive.output import (
     STYLES,
     die,
     plural,
+    program,
     spinner,
     symbol,
     warn,
@@ -77,7 +78,7 @@ def ensure_scratch_space(need: int, where: Path) -> None:
         raise die(
             f"Not enough scratch space in {where}: {decimal(free)} free, "
             f"about {decimal(need)} needed to stage the archive.",
-            fix="TMPDIR=/some/larger/volume g.py offload P1",
+            fix=f"TMPDIR=/some/larger/volume {program()} offload P1",
         )
 
 
@@ -105,7 +106,7 @@ def keep_default(keep: int | None) -> int:
         raise die(
             f"$GWARCHIVE_KEEP is not a whole number: {raw!r}",
             code=2,
-            fix="GWARCHIVE_KEEP=2 g.py push P1",
+            fix=f"GWARCHIVE_KEEP=2 {program()} push P1",
         )
     return int(raw)
 
@@ -179,7 +180,7 @@ def pull_archive(
                     f"{name} does not match the checksum recorded for it.\n"
                     f"expected {recorded}\ngot      {actual}",
                     fix=(
-                        f"g.py {verb} {prefix} --version {older}"
+                        f"{program()} {verb} {prefix} --version {older}"
                         if older
                         else f"rclone lsl {remote_root_of(target)}   # this is the only recorded copy"
                     ),
@@ -212,12 +213,12 @@ def resolve_sync_targets(selector: str, base_path: Path, command: str = "push") 
         cat_name = CATEGORIES[letter]
         cat_dir = base_path / cat_name
         if not cat_dir.exists():
-            raise die(f"No {cat_name} directory at {base_path}", fix=f"g.py init --path {base_path}")
+            raise die(f"No {cat_name} directory at {base_path}", fix=f"{program()} init --path {base_path}")
         targets = iter_archive_folders(base_path, cat_name)
         if not targets:
             raise die(
                 f"No folders found in category {cat_name}",
-                fix=f'g.py create {letter} "Name" --path {base_path}',
+                fix=f'{program()} create {letter} "Name" --path {base_path}',
             )
         return targets
 
@@ -238,7 +239,7 @@ def resolve_sync_targets(selector: str, base_path: Path, command: str = "push") 
         parent = sub_match.group(1) if sub_match else selector
         raise die(
             f"Sync works on top-level archive folders only; {source_path.name} is not one.",
-            fix=f"g.py {command} {parent}",
+            fix=f"{program()} {command} {parent}",
         )
 
     cat_name = determine_folder_category(source_path, base_path)

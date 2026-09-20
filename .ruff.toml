@@ -25,3 +25,15 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
 #
 # A complexity cap is still worth having, but measure it against the current
 # shape -- `verify` was never the outlier the old note here assumed.
+
+[lint.per-file-ignores]
+# The import order in commands/__init__.py IS the --help order: each module
+# registers its commands with @app.command() at import time, and Typer lists
+# them in registration order. Measured, not assumed -- isort merged those eight
+# lines into one parenthesised block and alphabetised them, and `gwarchive
+# --help` came out as browse, download, move, shell, stats, structure, upload,
+# verify instead of the intended grouping. So I001 is off for this one file.
+# F401 is off because the imports exist for their registration side effect and
+# have no other use. test_every_command_is_registered_in_help_order pins the
+# result, so a reorder fails loudly rather than drifting.
+"src/gwarchive/commands/__init__.py" = ["I001", "F401"]

@@ -27,7 +27,7 @@ from gwarchive.naming import (
     normalize_prefix,
     rename_preserving_prefix,
 )
-from gwarchive.output import die, note, warn
+from gwarchive.output import die, note, program, warn
 from gwarchive.paths import (
     allocate_number,
     display,
@@ -179,7 +179,7 @@ def check_prefix_available(target: Path, base_path: Path, source_path: Path | No
         raise die(
             f"{prefix} is already taken by {display(existing, base_path)}\n"
             f"Prefixes are permanent identifiers, so two folders cannot share one.",
-            fix=f"g.py list {prefix[0]}",
+            fix=f"{program()} list {prefix[0]}",
         )
 
 
@@ -216,4 +216,4 @@ def locate_source(source: str, base_path: Path) -> Path:
     found = resolve_prefix(source, base_path, quiet=True)
     if found:
         return found
-    raise die(f"Source not found: {source}", fix=f"g.py find {source}")
+    raise die(f"Source not found: {source}", fix=f"{program()} find {source}")

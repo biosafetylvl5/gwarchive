@@ -35,7 +35,7 @@ from pathlib import Path
 from gwarchive import external
 from gwarchive.external import rclone_tail
 from gwarchive.naming import TOMBSTONE_NAME, _reserved_member
-from gwarchive.output import die, warn
+from gwarchive.output import die, program, warn
 from gwarchive.tombstone import _mstr
 
 # The archive formats push and offload can write. The extension is deliberately
@@ -278,7 +278,7 @@ def archive_meta_of(meta: dict[str, object] | None) -> dict[str, object] | None:
         raise die(
             f"{TOMBSTONE_NAME} names an archive format this build cannot read: {fmt!r}",
             code=2,
-            fix="g.py verify   # then repair or remove the archive block",
+            fix=f"{program()} verify   # then repair or remove the archive block",
         )
     return raw
 
@@ -302,7 +302,7 @@ def select_version(arch: dict[str, object], spec: str | None) -> dict[str, objec
     if not versions:
         raise die(
             f"{TOMBSTONE_NAME} records an archive but no versions of it.",
-            fix="g.py push P1",
+            fix=f"{program()} push P1",
         )
     if spec is None:
         return versions[0]
@@ -318,7 +318,7 @@ def select_version(arch: dict[str, object], spec: str | None) -> dict[str, objec
     raise die(
         f"No such version: {wanted}\nRecorded versions, newest first:\n{listing}",
         code=2,
-        fix="g.py restore P1 --version 1",
+        fix=f"{program()} restore P1 --version 1",
     )
 
 

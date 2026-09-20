@@ -26,7 +26,7 @@ from gwarchive.naming import (
     folder_prefix,
     normalize_prefix,
 )
-from gwarchive.output import die, error, hint, labelled_message
+from gwarchive.output import die, error, hint, labelled_message, program
 
 
 def get_base_path() -> Path:
@@ -111,7 +111,7 @@ def resolve_prefix(prefix: str, base_path: Path, quiet: bool = False) -> Path | 
     if not matches:
         if not quiet:
             error(f"No folder found with prefix {normalized}")
-            hint(f"g.py find {normalized}")
+            hint(f"{program()} find {normalized}")
         return None
     if len(matches) > 1:
         if not quiet:
@@ -119,7 +119,7 @@ def resolve_prefix(prefix: str, base_path: Path, quiet: bool = False) -> Path | 
             for match in matches:
                 listing.append(f"\n{display(match, base_path)}")
             error(listing)
-            hint(f'g.py rename {normalized} "New name"')
+            hint(f'{program()} rename {normalized} "New name"')
         return None
     return matches[0]
 
@@ -184,4 +184,4 @@ def compute_folder_stats(folder: Path) -> tuple[int, int]:
 
 def require_archive(base_path: Path) -> None:
     if not base_path.exists():
-        raise die(f"No archive at {base_path}", fix=f"g.py init --path {base_path}")
+        raise die(f"No archive at {base_path}", fix=f"{program()} init --path {base_path}")

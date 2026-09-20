@@ -23,7 +23,7 @@ import subprocess
 from collections.abc import Sequence
 
 from gwarchive.naming import TOMBSTONE_NAME
-from gwarchive.output import die, spinner
+from gwarchive.output import die, program, spinner
 
 # What the per-file rclone mirror must leave behind, so it carries the same set
 # as the tar member filter. Without the second pattern a --no-compress push
@@ -55,13 +55,13 @@ def validate_remote_target(target: str, source: str = "--remote", command: str =
     value = target.strip()
     if is_remote_target(value):
         return value
-    suggestion = f"g.py {command} P1 --remote {value}:" if value and "/" not in value else None
+    suggestion = f"{program()} {command} P1 --remote {value}:" if value and "/" not in value else None
     raise die(
         f"{value or '(empty)'} is not a remote target ({source}).\n"
         "rclone only reads an argument as a remote when a colon comes before the first slash,"
         " so this would read or write a local directory instead of remote storage.",
         code=2,
-        fix=suggestion or f"g.py {command} P1 --remote nas:archive",
+        fix=suggestion or f"{program()} {command} P1 --remote nas:archive",
     )
 
 
@@ -75,7 +75,7 @@ def get_remotes(remotes: Sequence[str] | None = None, command: str = "push") -> 
     raise die(
         "No remote specified.\nPass --remote, or set $GWARCHIVE_REMOTE once in your shell profile.",
         code=2,
-        fix=f"g.py {command} P1 --remote nas:archive",
+        fix=f"{program()} {command} P1 --remote nas:archive",
     )
 
 

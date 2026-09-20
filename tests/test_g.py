@@ -19,8 +19,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner, Result
 
-import g
+import gwarchive
 from gwarchive import clock, external, naming, options, output, paths, sync, tarball, tombstone
+from gwarchive.commands import browse
 
 runner = CliRunner()
 
@@ -170,7 +171,7 @@ def test_no_traceback_when_copying_onto_an_existing_folder(archive: Path) -> Non
 def test_version_flag(archive: Path) -> None:
     result = run("--version")
     assert result.exit_code == 0
-    assert result.stdout.strip() == f"gwarchive {g.__version__}"
+    assert result.stdout.strip() == f"gwarchive {gwarchive.__version__}"
 
 
 def test_rename_command_exists_and_keeps_the_prefix(archive: Path) -> None:
@@ -271,7 +272,7 @@ def test_empty_category_names_the_next_action(archive: Path) -> None:
 def test_list_on_an_uninitialized_archive_fails_with_a_hint(tmp_path: Path) -> None:
     result = run("list", "P", "--path", tmp_path / "nothing")
     assert result.exit_code == 1
-    assert "g.py init" in result.stderr
+    assert "gwarchive init" in result.stderr
 
 
 def test_find_collapses_nested_matches(archive: Path) -> None:
@@ -846,8 +847,8 @@ def test_a_file_where_a_directory_belongs_is_a_message(archive: Path) -> None:
 
 def test_list_function_is_not_named_list() -> None:
     """6.4: the command function used to shadow the builtin."""
-    assert not isinstance(g.list_folders, type(list))
-    assert g.list_folders.__name__ == "list_folders"
+    assert not isinstance(browse.list_folders, type(list))
+    assert browse.list_folders.__name__ == "list_folders"
 
 
 # --- 6.5: prefixes are permanent -------------------------------------------
@@ -1505,7 +1506,7 @@ def test_sync_rejects_subfolders(archive: Path, rclone: Callable[..., list[list[
     res = run("push", sub, "--remote", "nas:archive", "--path", archive)
     assert res.exit_code == 1
     assert "top-level" in res.stderr
-    assert "g.py push P0001" in res.stderr
+    assert "gwarchive push P0001" in res.stderr
 
 
 def test_offload_dry_run_on_already_offloaded_folder_reports_instead_of_dying(

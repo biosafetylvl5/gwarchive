@@ -306,10 +306,7 @@ warn_unreachable = true
 # tests/ under disallow_untyped_defs -- which forces every monkeypatch
 # stand-in to be annotated, fixing for free the signature-drift concern
 # .ruff.toml raises when it declines ARG.
-# "g.py" is here TEMPORARILY, for the strangle window. Without it mypy would
-# typecheck a shrinking shim and ignore the 3,000 lines actually being moved,
-# reporting green for fifteen commits. Drop it in the commit that deletes g.py.
-files = ["src", "tests", "g.py"]
+files = ["src", "tests"]
 # `warn_unused_ignores` catches a `# type: ignore` that its error moved out
 # from under during the split. That is exactly the residue a split creates,
 # and it is invisible without this.
@@ -323,14 +320,6 @@ warn_unused_ignores = true
 # tests/ in that same commit. Setting it while tests/ does not yet exist
 # collects zero tests and makes the per-commit gate vacuous.
 testpaths = ["tests"]
-# TEMPORARY, for the strangle window only. tests/test_g.py still does
-# `import g`, and g.py sits at the repo root -- which pytest does not put on
-# sys.path once the tests live in tests/. This is NOT the forbidden
-# `pythonpath = ["src"]`: that one would let a broken [project] table pass CI by
-# making the package importable without being installed. This one exposes a
-# single root-level module that is on its way out. Delete this line in the
-# commit that deletes g.py.
-pythonpath = ["."]
 # --import-mode=importlib: the split gives tests/ nested directories with
 # duplicate basenames (tests/commands/test_stats.py beside tests/test_stats.py
 # would collide under the default prepend mode, which needs globally unique
@@ -388,12 +377,7 @@ update_changelog_on_bump = false
 # in silence and all 52 findings come back. So: run it from the repo root, and
 # `paths` is pinned here so `uv run vulture` needs no arguments at all.
 min_confidence = 60
-# "g.py" is here TEMPORARILY, for the strangle window, and for the same reason
-# it is in [tool.mypy].files: during the split g.py is the only caller of most
-# of what has been extracted, so without it vulture reports every freshly moved
-# function as dead. Drop it in the commit that deletes g.py -- at which point
-# the finding it stops suppressing is the one worth having.
-paths = ["src", "tests", "g.py"]
+paths = ["src", "tests"]
 sort_by_size = true
 
 # fnmatch, applied to the decorator's dotted callable ONLY -- vulture strips

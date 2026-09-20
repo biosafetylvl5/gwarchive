@@ -14,8 +14,10 @@ enforces that.
 
 import json
 import os
+import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 
 import typer
 from rich import box
@@ -277,3 +279,19 @@ def set_verbosity(quiet: bool, verbose: bool) -> None:
     global QUIET, VERBOSE
     QUIET = quiet
     VERBOSE = verbose
+
+
+def program() -> str:
+    """What to tell the user to type. Not necessarily how this process was started.
+
+    Under the console script that is "gwarchive". Under the zipapp there is no
+    `gwarchive` on PATH -- that is the whole premise of a self-contained .pyz --
+    so advising it would send the reader to a command-not-found. A hint is
+    advice about what to type; `launcher()` in commands/shell.py answers the
+    different question of what to EXECUTE, and its answer goes into the emitted
+    shell functions, where the string is run rather than read.
+    """
+    argv0 = Path(sys.argv[0])
+    if argv0.suffix == ".pyz":
+        return f"python {argv0.name}"
+    return "gwarchive"
