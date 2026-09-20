@@ -20,7 +20,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 import g
-from gwarchive import clock, output
+from gwarchive import clock, naming, output, paths
 
 runner = CliRunner()
 
@@ -62,35 +62,35 @@ def archive(tmp_path: Path) -> Path:
 
 @pytest.mark.parametrize("raw", ["P1", "P01", "P001", "P0001", "p1", " p0001 "])
 def test_normalize_prefix_expands_short_forms(raw: str) -> None:
-    assert g.normalize_prefix(raw) == "P0001"
+    assert naming.normalize_prefix(raw) == "P0001"
 
 
 @pytest.mark.parametrize("raw", ["X1", "P12345", "", "P", "0001", "PP01", "P 1"])
 def test_normalize_prefix_rejects_junk(raw: str) -> None:
-    assert g.normalize_prefix(raw) is None
+    assert naming.normalize_prefix(raw) is None
 
 
 def test_folder_prefix_reads_live_and_retired_names() -> None:
-    assert g.folder_prefix("P0001 Alpha") == "P0001"
-    assert g.folder_prefix("2020-01-01-P0002-Beta") == "P0002"
-    assert g.folder_prefix("not-a-prefix") is None
+    assert naming.folder_prefix("P0001 Alpha") == "P0001"
+    assert naming.folder_prefix("2020-01-01-P0002-Beta") == "P0002"
+    assert naming.folder_prefix("not-a-prefix") is None
 
 
 def test_folder_descriptor_reads_live_and_retired_names() -> None:
-    assert g.folder_descriptor("P0001 Alpha") == "Alpha"
-    assert g.folder_descriptor("2020-01-01-P0002-Beta") == "Beta"
+    assert naming.folder_descriptor("P0001 Alpha") == "Alpha"
+    assert naming.folder_descriptor("2020-01-01-P0002-Beta") == "Beta"
 
 
 def test_rename_preserving_prefix_keeps_the_identifier() -> None:
-    assert g.rename_preserving_prefix("P0001 Alpha", "Renamed") == "P0001 Renamed"
-    assert g.rename_preserving_prefix("2020-01-01-P0002-Beta", "Renamed") == "2020-01-01-P0002-Renamed"
+    assert naming.rename_preserving_prefix("P0001 Alpha", "Renamed") == "P0001 Renamed"
+    assert naming.rename_preserving_prefix("2020-01-01-P0002-Beta", "Renamed") == "2020-01-01-P0002-Renamed"
 
 
 def test_matches_pattern_exact_is_equality_not_substring() -> None:
     # 6.3: --exact used to be a case-sensitive substring search.
-    assert g.matches_pattern("P0001 Notes", "P0001 Notes", exact=True)
-    assert not g.matches_pattern("P0001 Notes", "Notes", exact=True)
-    assert g.matches_pattern("P0001 Notes", "notes", exact=False)
+    assert naming.matches_pattern("P0001 Notes", "P0001 Notes", exact=True)
+    assert not naming.matches_pattern("P0001 Notes", "Notes", exact=True)
+    assert naming.matches_pattern("P0001 Notes", "notes", exact=False)
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ def test_create_emits_exactly_one_line(archive: Path) -> None:
 
 
 def test_ensure_directory_is_silent(archive: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    g.ensure_directory(archive / "Project" / "scratch")
+    paths.ensure_directory(archive / "Project" / "scratch")
     assert capsys.readouterr().out == ""
 
 
@@ -406,7 +406,7 @@ def test_verify_fix_creates_nothing_but_the_categories(tmp_path: Path) -> None:
     base = tmp_path / "fresh"
     result = run("verify", "--fix", "--path", base)
     assert result.exit_code == 0
-    assert sorted(p.name for p in base.iterdir()) == sorted(g.CATEGORIES.values())
+    assert sorted(p.name for p in base.iterdir()) == sorted(naming.CATEGORIES.values())
     # And a second run has nothing left to say.
     assert run("verify", "--path", base).exit_code == 0
 
@@ -444,7 +444,7 @@ def test_verify_fix_creates_missing_categories(tmp_path: Path) -> None:
     base.mkdir()
     result = run("verify", "--fix", "--path", base)
     assert result.exit_code == 0
-    for category in g.CATEGORIES.values():
+    for category in naming.CATEGORIES.values():
         assert (base / category).is_dir()
 
 
@@ -862,7 +862,7 @@ def test_mv_across_categories_keeps_the_prefix(archive: Path) -> None:
     assert result.exit_code == 0
     assert (archive / "Archive" / "P0001 Alpha").is_dir()
 
-    prefixes = sorted(g.folder_prefix(p.name) or "" for p in (archive / "Archive").iterdir())
+    prefixes = sorted(naming.folder_prefix(p.name) or "" for p in (archive / "Archive").iterdir())
     assert prefixes == ["A0001", "P0001"]
 
 
@@ -1141,7 +1141,7 @@ def test_pull_and_restore_refuse_a_colonless_remote_recorded_in_metadata(
 
     res = run(command, "P1", "--path", archive)
     assert res.exit_code == 2
-    assert g.TOMBSTONE_NAME in res.stderr
+    assert naming.TOMBSTONE_NAME in res.stderr
     assert calls == []
 
 
@@ -1371,7 +1371,7 @@ def test_offload_deletes_local_contents_and_leaves_tombstone(
     assert not sub.exists()
 
     # Tombstone file remains
-    assert (folder / g.TOMBSTONE_NAME).exists()
+    assert (folder / naming.TOMBSTONE_NAME).exists()
     assert g.is_offloaded(folder)
     meta = g.read_tombstone(folder)
     assert meta is not None
@@ -1481,11 +1481,11 @@ def test_verify_detects_corrupted_tombstone_and_half_offload(archive: Path) -> N
     run("create", "P", "Beta", "--path", archive)
 
     # Corrupt tombstone in Alpha
-    alpha_meta = archive / "Project" / "P0001 Alpha" / g.TOMBSTONE_NAME
+    alpha_meta = archive / "Project" / "P0001 Alpha" / naming.TOMBSTONE_NAME
     alpha_meta.write_text("{bad json")
 
     # Half-offload in Beta (marked offloaded but files still present)
-    beta_meta = archive / "Project" / "P0002 Beta" / g.TOMBSTONE_NAME
+    beta_meta = archive / "Project" / "P0002 Beta" / naming.TOMBSTONE_NAME
     beta_meta.write_text(json.dumps({"offloaded_at": "2026-09-04T12:00:00"}))
     (archive / "Project" / "P0002 Beta" / "leftover.txt").write_text("still here")
 
@@ -1533,7 +1533,7 @@ def test_offload_writes_tombstone_before_deleting(
     (folder / "doc.txt").write_text("data")
 
     seen: list[bool] = []
-    real_rmtree = g.shutil.rmtree
+    real_rmtree = shutil.rmtree
 
     def spy_unlink(self: Path, missing_ok: bool = False) -> None:
         seen.append(g.is_offloaded(folder))
@@ -1541,7 +1541,7 @@ def test_offload_writes_tombstone_before_deleting(
 
     real_unlink = Path.unlink
     monkeypatch.setattr(Path, "unlink", spy_unlink)
-    monkeypatch.setattr(g.shutil, "rmtree", real_rmtree)
+    monkeypatch.setattr(shutil, "rmtree", real_rmtree)
 
     res = run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
     assert res.exit_code == 0
@@ -1664,7 +1664,7 @@ def rclone_local(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
                 src, dst = Path(args[1]), Path(args[2])
                 dst.mkdir(parents=True, exist_ok=True)
                 for item in sorted(src.rglob("*")):
-                    if item.is_file() and item.name != g.TOMBSTONE_NAME:
+                    if item.is_file() and item.name != naming.TOMBSTONE_NAME:
                         out = dst / item.relative_to(src)
                         out.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(item, out)
@@ -1770,7 +1770,7 @@ def test_offload_then_restore_round_trips_the_contents(
 
     assert run("offload", "P1", "--remote", remote, "--yes", "--path", archive).exit_code == 0
     assert g.is_offloaded(folder)
-    assert sorted(p.name for p in folder.iterdir()) == [".gwarchive-cache", g.TOMBSTONE_NAME]
+    assert sorted(p.name for p in folder.iterdir()) == [".gwarchive-cache", naming.TOMBSTONE_NAME]
 
     assert run("restore", "P1", "--path", archive).exit_code == 0
     assert not g.is_offloaded(folder)
@@ -1802,7 +1802,7 @@ def test_restore_refuses_an_object_that_fails_its_checksum(
     assert "checksum" in res.stderr
     # Only copy recorded, so the hint must not offer a --version 2 that is not there.
     assert "--version" not in res.stderr
-    assert sorted(p.name for p in folder.iterdir()) == [".gwarchive-cache", g.TOMBSTONE_NAME]
+    assert sorted(p.name for p in folder.iterdir()) == [".gwarchive-cache", naming.TOMBSTONE_NAME]
     assert g.is_offloaded(folder)
 
     # With a spare copy retained, the same failure points at it.
@@ -1908,13 +1908,13 @@ def test_extraction_refuses_members_that_escape_the_folder(tmp_path: Path) -> No
 def test_extraction_drops_reserved_members(tmp_path: Path) -> None:
     """An archive cannot overwrite local bookkeeping on the way in."""
     obj = tmp_path / "sneaky.tar.gz"
-    hostile_archive(obj, [g.TOMBSTONE_NAME, ".gwarchive-other", "sub/.gwarchive-nested", "good.txt"])
+    hostile_archive(obj, [naming.TOMBSTONE_NAME, ".gwarchive-other", "sub/.gwarchive-nested", "good.txt"])
     dest = tmp_path / "dest"
     dest.mkdir()
-    (dest / g.TOMBSTONE_NAME).write_text('{"keep": "me"}')
+    (dest / naming.TOMBSTONE_NAME).write_text('{"keep": "me"}')
 
     assert g.extract_archive(obj, dest, "tar.gz") == 1
-    assert (dest / g.TOMBSTONE_NAME).read_text() == '{"keep": "me"}'
+    assert (dest / naming.TOMBSTONE_NAME).read_text() == '{"keep": "me"}'
     assert not (dest / ".gwarchive-other").exists()
 
 
@@ -2158,15 +2158,15 @@ def test_push_dry_run_creates_no_archive_and_calls_no_rclone(
     assert "tar.gz" in res.stdout
     assert calls == []
     assert not remote.exists()
-    assert not (folder / g.TOMBSTONE_NAME).exists()
+    assert not (folder / naming.TOMBSTONE_NAME).exists()
 
 
 def test_pick_codec_prefers_zstd_and_falls_back_to_gzip(monkeypatch: pytest.MonkeyPatch) -> None:
     """gzip is the fallback, not the default -- and the env can force either."""
-    monkeypatch.setattr(g.shutil, "which", lambda _name: "/opt/homebrew/bin/zstd")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/opt/homebrew/bin/zstd")
     assert g.pick_codec() == "tar.zst"
 
-    monkeypatch.setattr(g.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     assert g.pick_codec() == "tar.gz"
 
     monkeypatch.setenv("GWARCHIVE_CODEC", "zstd")
@@ -2233,7 +2233,7 @@ def test_offload_refuses_when_scratch_space_is_short(
     class NoRoom:
         free = 1
 
-    monkeypatch.setattr(g.shutil, "disk_usage", lambda _path: NoRoom())
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: NoRoom())
 
     res = run("offload", "P1", "--remote", tmp_path / "remote", "--yes", "--path", archive)
     assert res.exit_code == 1
@@ -2338,7 +2338,7 @@ def test_offload_prompt_states_the_scratch_it_needs(
     # rendered panel: the panel goes to stderr so it cannot share stdout with a
     # --json document, and its wrapping depends on the terminal width.
     folder = archive / "Project" / "P0001 Alpha [draft]"
-    size, count = g.compute_folder_stats(folder)
+    size, count = paths.compute_folder_stats(folder)
     summary = g.offload_summary([("Project", folder, size, count)], ["nas:archive"], archive, "tar.gz").plain
     assert "packs" in summary and "one tar.gz object per folder" in summary
     assert "needs" in summary and "$TMPDIR" in summary
