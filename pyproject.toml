@@ -35,7 +35,7 @@ name = "gwarchive"
 # So: this key, plus a literal `__version__` in src/gwarchive/__init__.py,
 # kept in step by [tool.commitizen].version_files. That is two declarations,
 # not one, and test_version_matches_package_metadata is the guard.
-version = "1.3.0"
+version = "1.3.1"
 description = "Organize folders under the GWArchive naming standard"
 readme = "README.md"
 requires-python = ">=3.11"
