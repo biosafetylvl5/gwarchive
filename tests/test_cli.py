@@ -1,8 +1,6 @@
 """Cross-cutting CLI behaviour: exit codes, --json, --quiet, --version.
 
-Fixtures live in conftest.py. A test that guards a numbered finding cites it
-as "N.M" and resolves against docs/history/accepted-plan.md;
-test_structure.py enforces that.
+Fixtures live in conftest.py.
 """
 
 from pathlib import Path
@@ -35,6 +33,6 @@ def test_cd_is_silent_on_a_missing_prefix(archive: Path) -> None:
 
 
 def test_list_function_is_not_named_list() -> None:
-    """6.4: the command function used to shadow the builtin."""
+    """The command function used to shadow the builtin."""
     assert not isinstance(browse.list_folders, type(list))
     assert browse.list_folders.__name__ == "list_folders"

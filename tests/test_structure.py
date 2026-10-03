@@ -219,23 +219,6 @@ def test_config_floors_agree() -> None:
     assert lowest[:2] == tuple(int(x) for x in floor), "tests.yaml matrix floor"
 
 
-def test_every_cited_finding_exists_in_the_record() -> None:
-    """Prevents a citation that points at nothing, and pins the record's path.
-
-    Tests that guard a numbered accepted-plan.md finding name it in a docstring
-    or comment. Moving or renaming that file now fails here rather than
-    silently orphaning 17 references.
-    """
-    record = ROOT / "docs" / "history" / "accepted-plan.md"
-    assert record.exists(), f"the annotated record moved: {record}"
-    headings = set(re.findall(r"^### (\d+\.\d+) ", record.read_text(), re.M))
-    assert headings, "heading format changed; this test can no longer resolve citations"
-
-    for path in sorted((ROOT / "tests").rglob("test_*.py")):
-        for cited in re.findall(r'(?:"""|#\s*)(\d+\.\d+):', path.read_text()):
-            assert cited in headings, f"{path.name} cites finding {cited}, not in {record.name}"
-
-
 def test_version_matches_package_metadata() -> None:
     """Prevents a half-finished `cz bump` from going unnoticed.
 

@@ -1,8 +1,6 @@
 """verify: the structural audit, its severities, --fix and --quarantine.
 
-Fixtures live in conftest.py. A test that guards a numbered finding cites it
-as "N.M" and resolves against docs/history/accepted-plan.md;
-test_structure.py enforces that.
+Fixtures live in conftest.py.
 """
 
 import json
@@ -17,7 +15,7 @@ from gwarchive import clock, naming, tombstone
 
 
 def test_verify_exits_nonzero_when_it_reports_errors(archive: Path) -> None:
-    """3.4: verify used to report problems and exit 0."""
+    """Verify used to report problems and exit 0."""
     (archive / "RandomDir").mkdir()
     result = run("verify", "--path", archive)
     assert result.exit_code == 1
@@ -41,7 +39,7 @@ def test_verify_groups_its_findings(archive: Path) -> None:
 
 
 def test_verify_checks_the_subfolder_convention(archive: Path, folder: Path) -> None:
-    """3.5: the P0001.01 convention mksub enforces was never verified."""
+    """The P0001.01 convention mksub enforces was never verified."""
     (folder / "P0001.9 Bad").mkdir()
     result = run("verify", "--path", archive)
     assert result.exit_code == 1
@@ -55,7 +53,7 @@ def test_verify_allows_ordinary_working_subdirectories(archive: Path) -> None:
 
 
 def test_verify_reports_duplicate_prefixes(archive: Path, duplicates: None) -> None:
-    """3.6: nothing in verify ever compared two folders."""
+    """Nothing in verify ever compared two folders."""
     result = run("verify", "--path", archive)
     assert result.exit_code == 1
     assert "A0001 is claimed by 2 folders" in result.stdout
@@ -139,7 +137,7 @@ def test_verify_fix_creates_nothing_but_the_categories(tmp_path: Path) -> None:
 
 
 def test_verify_fix_does_not_quarantine(archive: Path) -> None:
-    """4.1: --fix used to relocate anything it did not recognize."""
+    """--fix used to relocate anything it did not recognize."""
     (archive / "RandomDir").mkdir()
     (archive / "stray.txt").write_text("keep me")
     result = run("verify", "--fix", "--path", archive)

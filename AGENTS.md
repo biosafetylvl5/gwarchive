@@ -110,8 +110,6 @@ returns `"tar.gz"` and all 23 `gzip_codec` tests pass with their seam dead.
 - **`.ruff.toml` is standalone**, and a `[tool.ruff]` table in pyproject would
   be ignored silently; see the comment in `pyproject.toml`.
   `test_config_floors_agree` keeps its `target-version` matching the floor.
-- **`extend-exclude = ["*.md"]` in `.ruff.toml` is load-bearing**: without it
-  `ruff format` rewrites old code quoted in `docs/history/accepted-plan.md`.
 - **Never run `typos -w`, or typos as a pre-commit hook.**
   `.gwarchive-offload.json`, `tool_version` and `offloaded_at` are wire format,
   and `Alph` in `tests/test_browse.py` is a deliberate partial match.
@@ -149,9 +147,6 @@ leg in `tests.yaml`.
 - The autouse `isolate` fixture points `$GWARCHIVE_BASE` at a tmpdir and clears
   every `GWARCHIVE_*` variable by prefix, so no test reaches a real archive or
   inherits a developer's settings.
-- A test guarding a numbered finding in `docs/history/accepted-plan.md` cites
-  it as `N.M` in its docstring; `test_every_cited_finding_exists_in_the_record`
-  resolves them.
 - Assert against `--json`, not rendered tables. A fixture sets `COLUMNS=200`
   and the table assertions depend on it.
 
@@ -183,7 +178,5 @@ The release, not the tag, triggers `package-and-publish.yaml`.
 
 ## Related documents
 
-- `docs/history/accepted-plan.md` — the annotated record this implementation
-  follows. **Don't edit it**; the formatters are configured to leave it alone.
 - `CHANGELOG.md` / `changelog/` — brassy fragments. brassy owns the release
   notes; commitizen owns only the version and the tag.

@@ -1,21 +1,9 @@
 default_install_hook_types: [pre-commit, commit-msg]
 
-# `trailing-whitespace` is deliberately absent: accepted-plan.md quotes
-# captured terminal output whose trailing spaces are the evidence for findings
-# 1.2 and 1.3.
+# CHANGELOG.md is excluded from mdformat because brassy regenerates it.
 #
-# docs/history/ is excluded from the Markdown formatters. accepted-plan.md is
-# the user's annotated record: mdformat renumbers the step lists its prose cites
-# and unwraps its paragraphs, and blacken-docs reformats the old code it quotes
-# as evidence. CHANGELOG.md is excluded too, because brassy regenerates it.
-#
-# The ruff pin below moved v0.15.6 -> v0.16.8. That crosses a threshold: ruff
-# 0.16.0 promoted Markdown formatting out of preview, so from this rev onward
-# `ruff-format` WILL rewrite python fences inside *.md. Measured against this
-# repo: with `.ruff.toml`'s `extend-exclude = ["*.md"]` ruff formats 1 file;
-# without it, 2 more "would be reformatted" and the diff rewrites a quoted
-# Optional[str] signature inside accepted-plan.md -- old code held as evidence.
-# That exclude is load-bearing at this rev, not decoration. Do not remove it.
+# Since ruff 0.16.0 `ruff format` also formats python fences inside *.md, so
+# README.md and AGENTS.md are covered by ruff as well as blacken-docs.
 repos:
   # check-toml would have refused the commit that left merge-conflict markers
   # in pyproject.toml, which then broke every tool in the gate unnoticed.
@@ -37,14 +25,13 @@ repos:
     rev: "1.20.0"
     hooks:
       - id: blacken-docs
-        exclude: ^docs/history/
         additional_dependencies:
           - black==26.3.0
   - repo: https://github.com/executablebooks/mdformat
     rev: "1.0.0"
     hooks:
       - id: mdformat
-        exclude: ^(docs/history/|CHANGELOG\.md$)
+        exclude: ^CHANGELOG\.md$
         additional_dependencies:
           - mdformat-gfm
           - mdformat-black

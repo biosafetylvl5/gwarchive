@@ -1,8 +1,6 @@
 """stats.
 
-Fixtures live in conftest.py. A test that guards a numbered finding cites it
-as "N.M" and resolves against docs/history/accepted-plan.md;
-test_structure.py enforces that.
+Fixtures live in conftest.py.
 """
 
 import json
@@ -22,14 +20,14 @@ from conftest import run
     ],
 )
 def test_invalid_category_exits_two_instead_of_widening(args: tuple[str, ...], archive: Path) -> None:
-    """2.2: find/stats used to silently search the whole archive."""
+    """The find and stats commands used to silently search the whole archive."""
     result = run(*args, "--path", archive)
     assert result.exit_code == 2
     assert "not a category" in result.stderr + result.stdout
 
 
 def test_stats_scales_size_units(archive: Path, folder: Path) -> None:
-    """3.3: everything used to be reported in MB."""
+    """Everything used to be reported in MB."""
     (folder / "big.bin").write_bytes(b"x" * 3_000_000)
     result = run("stats", "--path", archive)
     assert "MB" in result.stdout

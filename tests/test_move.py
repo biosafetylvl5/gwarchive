@@ -1,8 +1,6 @@
 """The relocation verbs: mv, rename, cp, oldify -- and prefix permanence.
 
-Fixtures live in conftest.py. A test that guards a numbered finding cites it
-as "N.M" and resolves against docs/history/accepted-plan.md;
-test_structure.py enforces that.
+Fixtures live in conftest.py.
 """
 
 from pathlib import Path
@@ -26,7 +24,7 @@ def _fs_is_case_insensitive(directory: Path) -> bool:
 
 
 def test_mv_into_a_missing_category_does_not_narrate(tmp_path: Path) -> None:
-    """1.3: 'Created directory: .../Old' used to leak from the helper."""
+    """'Created directory: .../Old' used to leak from the helper."""
     base = tmp_path / "partial"
     (base / "Project" / "P0001 Alpha").mkdir(parents=True)
     result = run("mv", "P0001", "Old", "--path", base)
@@ -35,7 +33,7 @@ def test_mv_into_a_missing_category_does_not_narrate(tmp_path: Path) -> None:
 
 
 def test_errors_go_to_stderr_and_stdout_stays_clean(archive: Path) -> None:
-    """1.4: diagnostics used to land on stdout."""
+    """Diagnostics used to land on stdout."""
     result = run("mv", "P9", "Archive", "--path", archive)
     assert result.exit_code == 1
     assert result.stdout.strip() == ""
@@ -43,7 +41,7 @@ def test_errors_go_to_stderr_and_stdout_stays_clean(archive: Path) -> None:
 
 
 def test_no_traceback_when_copying_onto_an_existing_folder(archive: Path) -> None:
-    """1.5: this used to raise a raw FileExistsError."""
+    """This used to raise a raw FileExistsError."""
     run("create", "M", "Assets", "--path", archive)
     run("create", "P", "Alpha", "--path", archive)
     result = run("cp", "M0001", "P0001", "--path", archive)
@@ -83,7 +81,7 @@ def test_mv_force_overwrites(archive: Path) -> None:
 
 
 def test_mv_refuses_a_move_that_would_duplicate_a_prefix(archive: Path) -> None:
-    """6.5: the collision is refused up front, not resolved by overwriting."""
+    """The collision is refused up front, not resolved by overwriting."""
     run("create", "P", "Alpha", "--path", archive)
     (archive / "Archive" / "P0001 Impostor").mkdir()
     result = run("mv", archive / "Project" / "P0001 Alpha", "Archive", "--path", archive)
@@ -132,7 +130,7 @@ def test_dry_run_output_keeps_the_shape_of_the_real_thing(
 
 
 def test_oldify_honors_the_date_flag(archive: Path) -> None:
-    """6.1: --date was validated and then ignored."""
+    """--date was validated and then ignored."""
     run("create", "P", "Beta", "--path", archive)
     result = run("oldify", "P1", "--date", "2020-01-01", "--path", archive)
     assert result.exit_code == 0
@@ -147,7 +145,7 @@ def test_oldify_rejects_a_bad_date(archive: Path) -> None:
 
 
 def test_cp_into_a_prefix_destination(archive: Path, folder: Path) -> None:
-    """6.2: 'cp foo P0001' used to create a literal ./P0001 directory."""
+    """'cp foo P0001' used to create a literal ./P0001 directory."""
     run("create", "M", "Assets", "--path", archive)
     result = run("cp", "M1", "P1", "--path", archive)
     assert result.exit_code == 0
@@ -253,7 +251,7 @@ def test_cd_follows_a_folder_across_a_category_move(archive: Path) -> None:
 
 
 def test_create_does_not_reissue_a_retired_number(archive: Path) -> None:
-    """6.5: create ignored Old/, so a retired number came back."""
+    """The create command ignored Old/, so a retired number came back."""
     run("create", "P", "Alpha", "--path", archive)
     run("create", "P", "Beta", "--path", archive)
     run("oldify", "P2", "--date", "2020-01-01", "--path", archive)

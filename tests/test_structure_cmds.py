@@ -1,8 +1,6 @@
 """The commands that make things: init, create, mksub.
 
-Fixtures live in conftest.py. A test that guards a numbered finding cites it
-as "N.M" and resolves against docs/history/accepted-plan.md;
-test_structure.py enforces that.
+Fixtures live in conftest.py.
 """
 
 from pathlib import Path
@@ -19,7 +17,7 @@ def test_bracketed_names_survive_the_create_message(archive: Path) -> None:
 
 
 def test_create_emits_exactly_one_line(archive: Path) -> None:
-    """1.3: ensure_directory used to print alongside the command itself."""
+    """Ensure_directory used to print alongside the command itself."""
     result = run("create", "P", "Alpha", "--path", archive)
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     assert len(lines) == 1
@@ -33,7 +31,7 @@ def test_paths_are_shown_relative_to_the_archive_root(archive: Path) -> None:
 
 
 def test_ambiguous_prefix_fails_instead_of_guessing(archive: Path, duplicates: None) -> None:
-    """4.4: the first iterdir() match used to win, silently."""
+    """The first iterdir() match used to win, silently."""
     result = run("mksub", "A1", "Notes", "--path", archive)
     assert result.exit_code == 1
     assert "ambiguous" in result.stderr

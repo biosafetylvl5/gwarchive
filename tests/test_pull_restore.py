@@ -1,8 +1,6 @@
 """pull and restore -- the two wrappers over one fetch_folders body.
 
-Fixtures live in conftest.py. A test that guards a numbered finding cites it
-as "N.M" and resolves against docs/history/accepted-plan.md;
-test_structure.py enforces that.
+Fixtures live in conftest.py.
 """
 
 from collections.abc import Callable

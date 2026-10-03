@@ -1,8 +1,6 @@
 """Pure functions: naming, paths and output helpers, called directly.
 
-Fixtures live in conftest.py. A test that guards a numbered finding cites it
-as "N.M" and resolves against docs/history/accepted-plan.md;
-test_structure.py enforces that.
+Fixtures live in conftest.py.
 """
 
 from pathlib import Path
@@ -39,7 +37,7 @@ def test_rename_preserving_prefix_keeps_the_identifier() -> None:
 
 
 def test_matches_pattern_exact_is_equality_not_substring() -> None:
-    # 6.3: --exact used to be a case-sensitive substring search.
+    # --exact used to be a case-sensitive substring search.
     assert naming.matches_pattern("P0001 Notes", "P0001 Notes", exact=True)
     assert not naming.matches_pattern("P0001 Notes", "Notes", exact=True)
     assert naming.matches_pattern("P0001 Notes", "notes", exact=False)

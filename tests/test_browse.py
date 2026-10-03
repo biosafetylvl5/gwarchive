@@ -1,8 +1,6 @@
 """list and find.
 
-Fixtures live in conftest.py. A test that guards a numbered finding cites it
-as "N.M" and resolves against docs/history/accepted-plan.md;
-test_structure.py enforces that.
+Fixtures live in conftest.py.
 """
 
 import json
@@ -14,7 +12,7 @@ from conftest import run
 
 
 def test_bracketed_names_survive_display(archive: Path) -> None:
-    """1.1: '[draft]' used to be parsed as a style tag and deleted."""
+    """'[draft]' used to be parsed as a style tag and deleted."""
     run("create", "P", "[draft] Chapter [2]", "--path", archive)
 
     listed = run("list", "P", "--path", archive)
@@ -26,13 +24,13 @@ def test_bracketed_names_survive_display(archive: Path) -> None:
 
 @pytest.mark.parametrize("command", [("list",), ("create", "Thing")])
 def test_category_arguments_accept_lower_case(command: tuple[str, ...], archive: Path) -> None:
-    """2.2: 'create p X' worked while 'list p' failed."""
+    """'create p X' worked while 'list p' failed."""
     result = run(command[0], "p", *command[1:], "--path", archive)
     assert result.exit_code == 0
 
 
 def test_list_shows_a_prefix_you_can_feed_back_in(archive: Path) -> None:
-    """2.4: the Number column used to show '0001'."""
+    """The Number column used to show '0001'."""
     run("create", "P", "Alpha", "--path", archive)
     result = run("list", "P", "--path", archive)
     assert "P0001" in result.stdout
@@ -64,7 +62,7 @@ def test_find_collapses_nested_matches(archive: Path) -> None:
 
 
 def test_find_exits_nonzero_with_no_matches(archive: Path) -> None:
-    """3.4: grep convention."""
+    """Grep convention."""
     result = run("find", "nothing-matches-this", "--path", archive)
     assert result.exit_code == 1
 

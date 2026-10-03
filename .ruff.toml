@@ -4,10 +4,6 @@
 target-version = "py311"
 line-length = 110
 
-# Ruff formats Python blocks inside Markdown. The plan documents quote the
-# *old* code verbatim as evidence -- reformatting them would edit the record.
-extend-exclude = ["*.md"]
-
 [lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
 # B008 used to be ignored here, because `typer.Option(...)` in a default is
