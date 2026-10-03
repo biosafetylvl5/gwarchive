@@ -129,3 +129,9 @@ NoCompressPush = Annotated[
 NoCompressPull = Annotated[
     bool, typer.Option("--no-compress", help="Copy files individually, ignoring any recorded archive")
 ]
+RestoreKeepLocal = Annotated[
+    bool,
+    typer.Option(
+        "--keep-local", help="Clear offloaded status using the files already present; fetch nothing"
+    ),
+]

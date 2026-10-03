@@ -84,6 +84,24 @@ def _literal_destination(destination: str, base_path: Path) -> Path:
     return literal if literal.is_absolute() else base_path / literal
 
 
+def _category_letter_for_dir(literal: Path, base_path: Path) -> str | None:
+    """The category a literal path names, if it is one -- by inode, not string.
+
+    ``mv P1 project/`` resolves ``project`` to the real ``Project`` directory
+    on a case-folding volume; comparing path text would miss that, treat it as
+    an ordinary unrelated directory, and skip the date stamp / fresh-number /
+    prefix handling that the category form gets. Comparing by ``samefile``
+    catches it regardless of the case the user typed.
+    """
+    if not literal.is_dir():
+        return None
+    for letter, name in CATEGORIES.items():
+        candidate = base_path / name
+        if candidate.is_dir() and os.path.samefile(literal, candidate):
+            return letter
+    return None
+
+
 def resolve_destination(
     source_path: Path,
     destination: str,
@@ -112,8 +130,39 @@ def resolve_destination(
         target = dest_folder / source_path.name
     elif os.sep in destination or destination.startswith("~"):
         literal = _literal_destination(destination, base_path)
-        target = literal / source_path.name if literal.is_dir() else literal
+        letter = _category_letter_for_dir(literal, base_path)
+        if letter is not None:
+            dest_dir = base_path / CATEGORIES[letter]
+            target = dest_dir / name_in_category(
+                source_path.name, letter, base_path, date_override, fresh_number
+            )
+        elif literal.is_dir():
+            target = literal / source_path.name
+        elif destination.endswith(("/", os.sep)):
+            # A trailing separator says "a directory", so a mistyped category
+            # name must not quietly become a rename to a new, misspelled
+            # directory outside every category.
+            raise die(f"{destination} is not an existing directory.", code=2)
+        else:
+            # Prefixes are permanent, so a literal path whose last component
+            # doesn't carry the source's prefix would silently shed it --
+            # `mv P1 "Q1/Q2 Report"` used to rename P0001 to a bare "Q2 Report"
+            # with no prefix at all, invisible to every lookup afterward.
+            source_prefix = folder_prefix(source_path.name)
+            if source_prefix and folder_prefix(literal.name) != source_prefix:
+                raise die(
+                    f"{display(literal, base_path)} would drop {source_path.name}'s permanent prefix.\n"
+                    "Prefixes don't change -- move it into a category instead, or use 'rename'.",
+                    code=2,
+                )
+            target = literal
     else:
+        stripped = destination.strip()
+        if stripped in {"", ".", ".."}:
+            raise die(
+                f"{destination!r} is not a usable destination -- give a descriptor, category, or path.",
+                code=2,
+            )
         # A copy is a new thing wherever it lands, so the descriptor form has to
         # honour fresh_number too. Without it `cp P1 "Alpha v2"` built a second
         # P0001 and then died blaming permanence -- refusing the most natural
@@ -129,13 +178,34 @@ def resolve_destination(
 
 
 def check_not_nested(source_path: Path, target: Path) -> None:
-    """Refuse to move a folder into itself."""
+    """Refuse to move a folder into itself, or onto one of its own ancestors."""
     source_resolved = source_path.resolve()
     target_resolved = target.resolve()
     if source_resolved == target_resolved:
         raise die(f"Source and destination are the same: {source_path}")
     if source_resolved in target_resolved.parents:
         raise die(f"Cannot move {source_path.name} inside itself")
+    if target_resolved in source_resolved.parents:
+        # A destination that resolves to an ancestor of the source -- the
+        # descriptors ".", ".." and "" all used to land here -- made
+        # check_no_overwrite's --force rmtree the directory the source itself
+        # lives in, deleting siblings along with it.
+        raise die(f"{target} is an ancestor of {source_path.name} -- refusing to delete it")
+
+
+def is_same_entry(source_path: Path, target: Path) -> bool:
+    """True when source and target name the same filesystem entry.
+
+    By inode, not string: a case-only or Unicode-normalisation-only rename on
+    a volume that folds them compares unequal as text, which is what made
+    --force rmtree the very directory a rename was trying to produce.
+    """
+    if not destination_taken(target):
+        return False
+    try:
+        return os.path.samefile(source_path, target)
+    except OSError:
+        return False
 
 
 def destination_taken(target: Path) -> bool:
@@ -143,15 +213,25 @@ def destination_taken(target: Path) -> bool:
     return target.exists() or target.is_symlink()
 
 
-def check_no_overwrite(target: Path, base_path: Path, force: bool, fix: str | None = None) -> None:
+def check_no_overwrite(
+    target: Path, base_path: Path, force: bool, source_path: Path, fix: str | None = None
+) -> None:
     """Refuse to clobber an existing destination unless told to.
 
     ``fix`` comes from the call site because the escape route differs: mv and
     cp have --force and --rename, rename and oldify have neither, and the
     message used to advertise both to all four.
+
+    ``source_path`` guards identity: a target that is the source itself under
+    a different case or Unicode normalisation must never be deleted, even
+    under --force. mv and rename take the direct-rename shortcut before this
+    is ever reached; a copy landing on its own source has nothing else to do
+    but refuse.
     """
     if not destination_taken(target):
         return
+    if is_same_entry(source_path, target):
+        raise die(f"{display(target, base_path)} is {source_path.name} -- nothing to copy onto itself.")
     if force:
         warn(f"Overwriting: {display(target, base_path)}")
         if target.is_dir() and not target.is_symlink():
@@ -199,10 +279,10 @@ def warn_if_taken(target: Path, base_path: Path, force: bool) -> None:
         warn(f"Destination already exists: {shown} -- the real run would refuse this")
 
 
-def run_fs(description: str, func: Callable[..., object], *args: str | Path) -> None:
+def run_fs(description: str, func: Callable[..., object], *args: str | Path, **kwargs: object) -> None:
     """Run a filesystem operation, turning OS errors into clean messages."""
     try:
-        func(*args)
+        func(*args, **kwargs)
     except OSError as exc:
         reason = exc.strerror or str(exc)
         raise die(f"Could not {description}: {reason}") from exc

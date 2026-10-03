@@ -15,7 +15,10 @@ truthy, and past every guard downstream. And JSON's `true` is an int to Python,
 so the int reader excludes bools explicitly.
 """
 
+import contextlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from gwarchive.naming import TOMBSTONE_NAME
@@ -51,7 +54,11 @@ def read_tombstone_state(folder: Path) -> tuple[str, dict[str, object] | None]:
         return "absent", None
     try:
         data = json.loads(meta_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    # ValueError, not just json.JSONDecodeError (a subclass): a tombstone
+    # that is not valid UTF-8 raises UnicodeDecodeError from read_text, also a
+    # ValueError, and that must read as corrupt too rather than crash every
+    # reader of this file.
+    except (OSError, ValueError):
         return "corrupt", None
     return ("ok", data) if isinstance(data, dict) else ("not-object", None)
 
@@ -71,8 +78,36 @@ def get_recorded_remotes(meta: dict[str, object] | None) -> list[str]:
 
 
 def write_tombstone(folder: Path, data: dict[str, object]) -> None:
+    """Write the tombstone atomically.
+
+    ``write_text`` truncates before it writes, so a crash or ENOSPC mid-write
+    left a 0-byte or half-written file that the next read called "corrupt" --
+    discarding the recorded remotes and orphaning every object pruning could
+    otherwise have reclaimed. The temp file is a sibling (same directory, same
+    filesystem) so ``os.replace`` is atomic, and its name starts with
+    ``.gwarchive-`` so it is itself skipped by every reserved-name check if a
+    crash leaves it behind.
+    """
     meta_file = folder / TOMBSTONE_NAME
-    meta_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    # mkstemp creates 0600; keep the mode the file had, or what write_text
+    # gave it before (0644 under the usual umask), so a replace does not
+    # quietly make the tombstone unreadable to other users of a shared archive.
+    try:
+        mode = meta_file.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    fd, tmp_name = tempfile.mkstemp(prefix=".gwarchive-offload.tmp-", dir=folder)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, meta_file)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 def is_offloaded(folder: Path) -> bool:

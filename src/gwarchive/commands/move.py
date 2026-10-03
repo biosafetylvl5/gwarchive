@@ -16,12 +16,14 @@ from gwarchive.destination import (
     check_no_overwrite,
     check_not_nested,
     check_prefix_available,
+    is_same_entry,
     locate_source,
     resolve_destination,
     run_fs,
     warn_if_taken,
 )
 from gwarchive.naming import (
+    _reserved_member,
     rename_preserving_prefix,
 )
 from gwarchive.options import (
@@ -36,6 +38,7 @@ from gwarchive.output import (
     note,
     ok,
     program,
+    warn,
 )
 from gwarchive.paths import (
     display,
@@ -43,6 +46,15 @@ from gwarchive.paths import (
     resolve_prefix,
     transfer_message,
 )
+from gwarchive.tombstone import is_offloaded
+
+
+def _ignore_reserved(directory: str, names: list[str]) -> list[str]:
+    """shutil.copytree's ignore hook: a copy is a new identity, so it must
+    not inherit the source's tombstone -- carrying it along is what let
+    pushing the copy delete the original's only remote backup.
+    """
+    return [name for name in names if _reserved_member(name)]
 
 
 @app.command()
@@ -78,11 +90,23 @@ def mv(
     check_prefix_available(target, base_path, source_path)
 
     if dry_run:
-        warn_if_taken(target, base_path, force)
+        if not is_same_entry(source_path, target):
+            warn_if_taken(target, base_path, force)
         note(transfer_message("Would move", source_path, target, base_path))
         return
 
-    check_no_overwrite(target, base_path, force, fix=f"{program()} mv {source} {destination} --force")
+    if is_same_entry(source_path, target):
+        # A case-only or Unicode-normalisation-only rename: target is already
+        # "taken", by the source itself. os.rename is what actually performs
+        # that rename on a volume that folds them; check_no_overwrite's
+        # --force path would otherwise rmtree the very directory being renamed.
+        run_fs(f"rename {source_path.name}", os.rename, source_path, target)
+        ok(transfer_message("Moved", source_path, target, base_path))
+        return
+
+    check_no_overwrite(
+        target, base_path, force, source_path, fix=f"{program()} mv {source} {destination} --force"
+    )
     ensure_directory(target.parent)
     run_fs(f"move {source_path.name}", shutil.move, str(source_path), str(target))
     ok(transfer_message("Moved", source_path, target, base_path))
@@ -108,11 +132,21 @@ def rename(
         return
 
     if dry_run:
-        warn_if_taken(target, base_path, force=False)
+        if not is_same_entry(folder, target):
+            warn_if_taken(target, base_path, force=False)
         note(transfer_message("Would rename", folder, target, base_path))
         return
 
-    check_no_overwrite(target, base_path, force=False, fix=f'{program()} rename {prefix} "{name} 2"')
+    if is_same_entry(folder, target):
+        # A case-only or Unicode-normalisation-only rename: see mv's identical
+        # shortcut for why this cannot go through check_no_overwrite.
+        run_fs(f"rename {folder.name}", os.rename, folder, target)
+        ok(transfer_message("Renamed", folder, target, base_path))
+        return
+
+    check_no_overwrite(
+        target, base_path, force=False, source_path=folder, fix=f'{program()} rename {prefix} "{name} 2"'
+    )
     run_fs(f"rename {folder.name}", folder.rename, target)
     ok(transfer_message("Renamed", folder, target, base_path))
 
@@ -142,18 +176,38 @@ def cp(
 
     verb = "link" if link else "copy"
     if dry_run:
+        if is_same_entry(source_path, target):
+            warn(f"{display(target, base_path)} is {source_path.name} -- the real run would refuse this")
+            return
+        if not link and source_path.is_dir() and is_offloaded(source_path):
+            warn(f"{source_path.name} is offloaded -- the real run would refuse this")
+            return
         warn_if_taken(target, base_path, force)
         note(transfer_message(f"Would {verb}", source_path, target, base_path))
         return
 
-    check_no_overwrite(target, base_path, force, fix=f"{program()} cp {source} {destination} --force")
+    if not link and source_path.is_dir() and is_offloaded(source_path):
+        raise die(
+            f"{source_path.name} is offloaded -- there is nothing local to copy.",
+            fix=f"{program()} restore {source}",
+        )
+
+    check_no_overwrite(
+        target, base_path, force, source_path, fix=f"{program()} cp {source} {destination} --force"
+    )
     ensure_directory(target.parent)
 
     if link:
-        run_fs(f"link {source_path.name}", os.symlink, str(source_path), str(target))
+        run_fs(f"link {source_path.name}", os.symlink, str(source_path.absolute()), str(target))
         ok(transfer_message("Linked", source_path, target, base_path))
     elif source_path.is_dir():
-        run_fs(f"copy {source_path.name}", shutil.copytree, str(source_path), str(target))
+        run_fs(
+            f"copy {source_path.name}",
+            shutil.copytree,
+            str(source_path),
+            str(target),
+            ignore=_ignore_reserved,
+        )
         ok(transfer_message("Copied", source_path, target, base_path))
     else:
         run_fs(f"copy {source_path.name}", shutil.copy2, str(source_path), str(target))
@@ -172,9 +226,13 @@ def oldify(
 
     if date:
         try:
-            datetime.strptime(date, "%Y-%m-%d")
+            parsed = datetime.strptime(date, "%Y-%m-%d")
         except ValueError as exc:
             raise die(f"Invalid date format: {date}. Use YYYY-MM-DD.", code=2) from exc
+        # strptime accepts unpadded dates like "2026-1-5"; normalising keeps
+        # the folder name matching OLD_RE, which pads both fields to two
+        # digits. Anything else makes the folder invisible to every scan.
+        date = parsed.strftime("%Y-%m-%d")
     else:
         date = clock.today()
 
@@ -189,7 +247,11 @@ def oldify(
         return
 
     check_no_overwrite(
-        target, base_path, force=False, fix=f"{program()} oldify {source} --date {date}   # a different date"
+        target,
+        base_path,
+        force=False,
+        source_path=source_path,
+        fix=f"{program()} oldify {source} --date {date}   # a different date",
     )
     ensure_directory(target.parent)
     run_fs(f"move {source_path.name}", shutil.move, str(source_path), str(target))

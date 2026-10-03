@@ -84,3 +84,45 @@ def test_zstd_round_trips_a_real_archive(tmp_path: Path) -> None:
     assert tarball.extract_archive(obj, dest, "tar.zst") == members
     assert (dest / "sub" / "a.txt").read_text() == "streamed\n"
     assert (dest / "b.bin").read_bytes() == (src / "b.bin").read_bytes()
+
+
+def test_create_archive_rewrites_hard_links_as_regular_files(tmp_path: Path) -> None:
+    """Finding H2: gettarinfo records a repeat inode as a headers-only link
+    member with size 0. Left alone, extracting it drops the bytes for every
+    name but the archive's first occurrence of that inode. The filter must
+    rewrite it to a regular file with its real size so both names round-trip.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    first = src / "first.txt"
+    first.write_text("shared content\n")
+    second = src / "second.txt"
+    second.hardlink_to(first)
+
+    obj = tmp_path / "out.tar.gz"
+    members, _total = tarball.create_archive(src, obj, "tar.gz")
+    assert members == 2
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    assert tarball.extract_archive(obj, dest, "tar.gz") == 2
+    assert (dest / "first.txt").read_text() == "shared content\n"
+    assert (dest / "second.txt").read_text() == "shared content\n"
+
+
+def test_unsupported_members_flags_symlinks_and_skips_reserved(tmp_path: Path) -> None:
+    """Finding H2: a symlink has no regular-file content for tar to carry, so
+    it must be flagged before packing -- but a symlink inside the reserved
+    metadata namespace is not part of what gets archived in the first place.
+    """
+    folder = tmp_path / "P0001 Alpha"
+    folder.mkdir()
+    (folder / "real.txt").write_text("data")
+    target = folder / "real.txt"
+    (folder / "link.txt").symlink_to(target)
+    cache = folder / ".gwarchive-cache"
+    cache.mkdir()
+    (cache / "cached-link").symlink_to(target)
+
+    bad = tarball.unsupported_members(folder)
+    assert bad == [folder / "link.txt"]

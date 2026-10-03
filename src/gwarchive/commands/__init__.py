@@ -1,4 +1,4 @@
-"""Importing this package registers all 18 commands on the Typer app.
+"""Importing this package registers all 19 commands on the Typer app.
 
 THE IMPORT ORDER BELOW IS THE --help ORDER. Each module registers its commands
 with @app.command() at import time, so reordering these lines reorders the help
@@ -20,4 +20,4 @@ from gwarchive.commands import upload  # noqa: F401  push, offload
 from gwarchive.commands import download  # noqa: F401  pull, restore
 from gwarchive.commands import stats  # noqa: F401
 from gwarchive.commands import verify  # noqa: F401
-from gwarchive.commands import shell  # noqa: F401  clears, cd, shell-init
+from gwarchive.commands import shell  # noqa: F401  clears, cd, here, shell-init

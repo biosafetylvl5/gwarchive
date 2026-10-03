@@ -1,0 +1,102 @@
+bug fix:
+  - title: "mv/cp no longer delete an ancestor of the source, or refuse a case-only rename"
+    description: |
+      A destination that resolved to an ancestor of the source -- the
+      descriptors `.`, `..` and the empty string all did this -- used to be
+      accepted, so `mv report.pdf . --force` rmtree'd the directory report.pdf
+      itself lived in, taking every sibling file with it. Those descriptors
+      are now refused up front, and `check_not_nested` refuses any target that
+      resolves to an ancestor of the source, with no `--force` hint offered
+      for either case.
+
+      Identity is now checked by inode rather than by path text, so a
+      case-only or Unicode-normalisation-only rename on a volume that folds
+      them (`mv P1 alpha`, `rename P1 alpha`) is recognized as the source
+      itself and performed with a direct rename, instead of being refused as
+      "already exists" and then, under `--force`, having the source rmtree'd
+      out from under the rename that was about to happen. `mv P1 project/`
+      recognizes `project` as the real `Project` category by inode and is
+      refused as a no-op rather than deleting it. `cp` refuses outright when a
+      destination resolves to the same file as its source -- there is nothing
+      to copy onto itself. `--dry-run` predicts the same outcome in every case.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/destination.py
+        - src/gwarchive/commands/move.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "cp no longer copies the source's tombstone, and refuses to copy an offloaded folder"
+    description: |
+      A copy is a new identity, so it must not inherit the source's
+      `.gwarchive-offload.json` -- carrying it along is what let pushing the
+      copy delete the original's only remote backup. `cp` now skips every
+      reserved name at any depth, matching the packer and rclone. Copying an
+      offloaded folder, which holds no local bytes worth copying, is now
+      refused with a hint to restore it first; `--link` is unaffected, since
+      it doesn't need the bytes, and now links to an absolute source path
+      rather than whatever was typed on the command line.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/commands/move.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "oldify --date normalizes unpadded dates"
+    description: |
+      `--date 2026-1-5` used to write that raw string into the folder name,
+      producing `Old/2026-1-5-P0001-Beta` -- a name the retired-folder pattern
+      doesn't match, making the folder invisible to every scan, to `cd` and to
+      `restore`, with its number free to be reissued. The parsed date is now
+      reformatted to zero-padded `YYYY-MM-DD` before it is used.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/commands/move.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "Literal-path destinations route through the category branch and can no longer drop a prefix"
+    description: |
+      A destination ending in a path separator now must name an existing
+      directory, or the command refuses with exit 2 instead of quietly
+      renaming the source to a new, misspelled directory outside every
+      category. A literal path that names the same directory as a category,
+      by inode rather than by text, now routes through the category branch, so
+      `mv P1 Old/` date-stamps the name and `cp P1 Archive/` allocates a fresh
+      number instead of dying with "already taken". Moving or copying a
+      prefixed source to a literal path whose resulting name would drop the
+      prefix is now refused with exit 2 -- prefixes are permanent identifiers
+      and were never meant to be shed by a path with a slash in it.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/destination.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null

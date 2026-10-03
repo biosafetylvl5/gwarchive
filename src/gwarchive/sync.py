@@ -10,6 +10,7 @@ offload reads as offloaded-with-leftovers rather than a silently emptied
 folder. The ordering is the safety property; it is not incidental.
 """
 
+import contextlib
 import os
 import shutil
 import tempfile
@@ -34,6 +35,7 @@ from gwarchive.naming import (
     CATEGORY_NAMES,
     SUBFOLDER_RE,
     TOMBSTONE_NAME,
+    _reserved_path,
     category_letter_for,
     folder_prefix,
 )
@@ -59,6 +61,7 @@ from gwarchive.tarball import (
 from gwarchive.tombstone import (
     _mint,
     _mstr,
+    read_tombstone_state,
 )
 
 
@@ -90,25 +93,32 @@ def compress_default() -> bool:
     return os.environ.get("GWARCHIVE_COMPRESS", "").strip().lower() not in ("0", "false", "no", "off")
 
 
-def keep_default(keep: int | None) -> int:
-    """--keep, else $GWARCHIVE_KEEP, else 1.
+def keep_default(keep: int | None, prior_archive: dict[str, object] | None = None) -> int:
+    """--keep, else $GWARCHIVE_KEEP, else this folder's own recorded keep, else 1.
 
-    One matches the uncompressed path, so retention grows only when asked.
+    Falling back past a value the folder already has on record is how a plain
+    push after ``push P1 --keep 5`` used to silently re-prune to 1: nothing
+    ever read ``archive["keep"]`` back. ``prior_archive`` is that folder's
+    existing archive block, not the whole tombstone -- callers already have it
+    on hand from the metadata they just read.
     """
     if keep is not None:
         return max(keep, 0)
     raw = os.environ.get("GWARCHIVE_KEEP", "").strip()
-    if not raw:
-        return 1
-    if not (raw.isascii() and raw.isdecimal()):
-        # Falling back to 1 here means "delete all but one copy" -- the
-        # opposite of what somebody raising the retention meant to ask for.
-        raise die(
-            f"$GWARCHIVE_KEEP is not a whole number: {raw!r}",
-            code=2,
-            fix=f"GWARCHIVE_KEEP=2 {program()} push P1",
-        )
-    return int(raw)
+    if raw:
+        if not (raw.isascii() and raw.isdecimal()):
+            # Falling back to 1 here means "delete all but one copy" -- the
+            # opposite of what somebody raising the retention meant to ask for.
+            raise die(
+                f"$GWARCHIVE_KEEP is not a whole number: {raw!r}",
+                code=2,
+                fix=f"GWARCHIVE_KEEP=2 {program()} push P1",
+            )
+        return int(raw)
+    recorded = _mint(prior_archive, "keep") if prior_archive is not None else None
+    if recorded is not None and recorded >= 0:
+        return recorded
+    return 1
 
 
 def stage_archive(folder: Path, tmpdir: Path, codec: str, *, as_json: bool) -> tuple[Path, dict[str, object]]:
@@ -129,6 +139,9 @@ def stage_archive(folder: Path, tmpdir: Path, codec: str, *, as_json: bool) -> t
         "member_count": members,
         "uncompressed_size": raw_size,
         "compressed_size": staged.stat().st_size,
+        # Populated as each remote copy actually succeeds, not with every
+        # remote this push was asked for -- see prune_versions.
+        "remotes": [],
     }
     return staged, entry
 
@@ -309,19 +322,126 @@ def resolve_fetch_source(
     category: str,
     folder_name: str,
     command: str,
+    version_remotes: Sequence[str] | None = None,
 ) -> str:
     """Where a pull or a restore reads from.
 
-    An explicit --remote wins. Otherwise the tombstone's ``remotes`` list is a
-    historical union that only ever grows, so the *last* usable entry is the
-    current one -- see AGENTS.md, "Retention". Entries a laxer version recorded
-    can be bare local paths; only a list with nothing usable in it is fatal.
+    An explicit --remote wins. Otherwise the selected VERSION's own recorded
+    remotes take priority over the folder's historical union: with per-version
+    retention, an older kept copy can live only on a remote a later push never
+    touched, and the folder-level list alone would send ``--version 2`` to a
+    directory that never had it. The folder-level ``remotes`` list is a
+    historical union that only ever grows, so the *last* usable entry there is
+    the fallback. Entries a laxer version recorded can be bare local paths;
+    only a list with nothing usable in it is fatal.
     """
     if remote:
         return remote_folder_target(remote, category, folder_name)
+    if version_remotes:
+        usable = [r for r in version_remotes if is_remote_target(r)]
+        if usable:
+            return usable[-1]
     if prev_remotes:
         usable = [r for r in prev_remotes if is_remote_target(r)]
         if usable:
             return usable[-1]
         return validate_remote_target(str(prev_remotes[0]), f"recorded in {TOMBSTONE_NAME}", command)
     return remote_folder_target(get_remotes(None, command)[0], category, folder_name)
+
+
+def require_tombstone(folder: Path, base_path: Path) -> dict[str, object]:
+    """The tombstone, refusing to treat corrupt as absent.
+
+    ``read_tombstone_state``'s whole point is that distinction -- collapsing a
+    corrupt or non-object tombstone back to "absent" here would re-introduce
+    exactly what it exists to prevent: push, offload, pull and restore would
+    all treat a damaged version index as a folder that was never backed up,
+    and overwrite it.
+    """
+    state, data = read_tombstone_state(folder)
+    if state in ("corrupt", "not-object"):
+        shown = display(folder, base_path)
+        # verify takes no folder argument; it reports every tombstone at once.
+        raise die(
+            f"{shown}'s {TOMBSTONE_NAME} is {state} and cannot be trusted as a version index.\n"
+            f"Repair {shown}/{TOMBSTONE_NAME} by hand; nothing has been changed.",
+            code=2,
+            fix=f"{program()} verify",
+        )
+    return data or {}
+
+
+def snapshot_manifest(folder: Path) -> dict[str, tuple[int, int]]:
+    """relative path -> (size, mtime_ns) for every non-reserved file, via lstat.
+
+    Taken before packing or copying, which can take a while, so a file created
+    or changed during the transfer is never deleted sight-unseen afterwards --
+    only a path whose size and mtime still match this snapshot is.
+    """
+    manifest: dict[str, tuple[int, int]] = {}
+    for root, dirs, files in os.walk(folder, followlinks=False):
+        root_path = Path(root)
+        dirs[:] = [d for d in dirs if not _reserved_path(root_path / d, folder)]
+        for name in files:
+            path = root_path / name
+            if _reserved_path(path, folder):
+                continue
+            try:
+                st = path.lstat()
+            except OSError:
+                continue
+            manifest[str(path.relative_to(folder))] = (st.st_size, st.st_mtime_ns)
+    return manifest
+
+
+def delete_archived_contents(folder: Path, manifest: dict[str, tuple[int, int]]) -> list[str]:
+    """Delete what the manifest says was captured and is still unchanged.
+
+    Bottom-up and never ``rmtree``: a reserved path is skipped at ANY depth
+    (the same rule ``create_archive`` prunes by), a changed or new file is
+    left behind and reported rather than guessed about, and a directory is
+    removed only once ``rmdir`` proves it is actually empty -- which it is not
+    when something reserved or kept still lives under it.
+    """
+    kept: list[str] = []
+    for root, dirs, files in os.walk(folder, topdown=False, followlinks=False):
+        root_path = Path(root)
+        for name in files:
+            path = root_path / name
+            if _reserved_path(path, folder):
+                continue
+            rel = str(path.relative_to(folder))
+            try:
+                st = path.lstat()
+            except OSError:
+                continue
+            if manifest.get(rel) == (st.st_size, st.st_mtime_ns):
+                path.unlink()
+            else:
+                kept.append(rel)
+        for name in dirs:
+            path = root_path / name
+            if _reserved_path(path, folder) or path.is_symlink():
+                continue
+            with contextlib.suppress(OSError):
+                path.rmdir()  # not empty: something reserved or kept still lives under it
+    return kept
+
+
+def overwrite_summary(entries: Sequence[tuple[Path, int]], base_path: Path) -> Text:
+    """Which folders hold local files a fetch is about to overwrite, and how many.
+
+    One prompt for the whole batch rather than one per folder, so declining
+    does not require sitting through every folder that came before the one you
+    actually wanted to stop at.
+    """
+    width = max((len(display(folder, base_path)) for folder, _ in entries), default=0)
+    summary = Text()
+    summary.append(
+        "Local files the remote also has will be overwritten\n\n",
+        style="bold",
+    )
+    for folder, count in entries:
+        summary.append(f"{display(folder, base_path):<{width}}  ")
+        summary.append(f"{plural(count, 'local file')}\n", style=STYLES["label"])
+    return summary

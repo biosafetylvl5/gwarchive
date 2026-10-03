@@ -1,8 +1,9 @@
-"""Shell integration: clears, cd, shell-init.
+"""Shell integration: clears, cd, here, shell-init.
 
 cd uses a bare print() and a silent sys.exit(1). Its stdout is consumed by
 `cd $(...)`, so a failed lookup must never emit a string that could be
-substituted into a cd argument. Keep that path unformatted."""
+substituted into a cd argument. Keep that path unformatted. here follows the
+same contract for the same reason: its stdout becomes a terminal title."""
 
 import os
 import shlex
@@ -14,6 +15,9 @@ from typing import Annotated
 import typer
 
 from gwarchive import external
+from gwarchive.naming import (
+    location_label,
+)
 from gwarchive.options import (
     BasePath,
     app,
@@ -23,6 +27,7 @@ from gwarchive.output import (
     detail,
 )
 from gwarchive.paths import (
+    parts_below,
     resolve_prefix,
 )
 
@@ -109,23 +114,92 @@ def cd(
     print(folder.absolute())
 
 
+@app.command()
+def here(
+    deepest: Annotated[
+        bool, typer.Option("--deepest", help="Name the innermost subfolder (P28.01:Docs), not its parent")
+    ] = False,
+    *,
+    base_path: BasePath,
+) -> None:
+    """Print a short name for where you are in the archive, for a terminal title.
+
+    P28:GWArchive anywhere inside Project/P0028 GWArchive, Old:Beta inside a
+    retired folder, G:Project in a category directory, and G: at the root.
+
+    Like 'cd', this prints nothing and exits 1 wherever it has no name to
+    give -- outside the archive, or in a directory without a prefix -- so a
+    caller falls back with ||. shell-init's title hook is built on it.
+    """
+    try:
+        cwd = Path.cwd()
+    except OSError:  # the directory was removed out from under the shell
+        sys.exit(1)
+    parts = parts_below(cwd, base_path)
+    label = location_label(parts, deepest=deepest) if parts is not None else None
+    if label is None:
+        sys.exit(1)
+    print(label)
+
+
 @app.command("shell-init")
 def shell_init(
     path: Annotated[
         Path | None, typer.Option("--path", help="Bake a fixed base path into the functions")
     ] = None,
     greet: Annotated[bool, typer.Option("--greet", help="Run 'clears' once when the shell starts")] = False,
+    title: Annotated[
+        bool, typer.Option("--title/--no-title", help="Set the terminal title from 'here' at each prompt")
+    ] = True,
 ) -> None:
     """Emit shell functions for bash/zsh. Use with: eval "$(gwarchive shell-init)"
 
     Defines 'gcd' and 'ggd' (same body, two names) and 'clears', which clears
     the screen and shows a pokemon. With --greet, 'clears' also runs once as
     the eval happens -- the pokemon-at-shell-startup greeting.
+
+    Also installs a prompt hook that titles the terminal with 'here', or the
+    directory name outside the archive. It asks 'here' only when the
+    directory changes. --no-title leaves the title alone.
     """
     # "launch", not "prefix": in this codebase a prefix is P0001.
     launch = " ".join(shlex.quote(part) for part in launcher())
     base_arg = f" --path {shlex.quote(str(path))}" if path else ""
     greet_line = "\nclears" if greet else ""
+    # OSC 0 sets the tab and the window title together; iTerm2 shows only the
+    # window's for OSC 2. The hook is appended, not prepended, so it runs after
+    # a terminal's own (VTE's sets the title too) and wins. It re-sends the
+    # cached title every prompt because programs like ssh and vim overwrite it,
+    # and returns the status it was called with, for prompts that show $?.
+    # `rc` and not `status`: zsh has a read-only $status.
+    title_block = (
+        f"""
+_gwarchive_title() {{
+    local rc=$?
+    [ "${{TERM-}}" = dumb ] && return $rc
+    if [ "$PWD" != "${{_gwarchive_title_pwd-}}" ]; then
+        _gwarchive_title_pwd=$PWD
+        _gwarchive_title_text="$({launch} here{base_arg} 2>/dev/null)" || case $PWD in
+            "$HOME") _gwarchive_title_text='~' ;;
+            /) _gwarchive_title_text=/ ;;
+            *) _gwarchive_title_text=${{PWD##*/}} ;;
+        esac
+    fi
+    printf '\\033]0;%s\\007' "${{_gwarchive_title_text//[[:cntrl:]]/}}"
+    return $rc
+}}
+if [ -n "${{ZSH_VERSION-}}" ]; then
+    autoload -Uz add-zsh-hook && add-zsh-hook precmd _gwarchive_title
+elif [ -n "${{BASH_VERSION-}}" ]; then
+    case "${{PROMPT_COMMAND-}}" in
+        *_gwarchive_title*) ;;
+        *) PROMPT_COMMAND="${{PROMPT_COMMAND:+$PROMPT_COMMAND
+}}_gwarchive_title" ;;
+    esac
+fi"""
+        if title
+        else ""
+    )
 
     print(
         f"""_gwarchive_cd() {{
@@ -139,5 +213,5 @@ def shell_init(
 }}
 gcd() {{ _gwarchive_cd "$@"; }}
 ggd() {{ _gwarchive_cd "$@"; }}
-clears() {{ {launch} clears "$@"; }}{greet_line}"""
+clears() {{ {launch} clears "$@"; }}{title_block}{greet_line}"""
     )

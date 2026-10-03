@@ -23,6 +23,7 @@ pick_codec and create_archive, so callers import the MODULE and write
 tarball.pick_codec().
 """
 
+import contextlib
 import hashlib
 import os
 import shutil
@@ -36,7 +37,7 @@ from gwarchive import external
 from gwarchive.external import rclone_tail
 from gwarchive.naming import TOMBSTONE_NAME, _reserved_member
 from gwarchive.output import die, program, warn
-from gwarchive.tombstone import _mstr
+from gwarchive.tombstone import _mstr, get_recorded_remotes
 
 # The archive formats push and offload can write. The extension is deliberately
 # the codec's own: lose the tombstone entirely and
@@ -166,6 +167,16 @@ def create_archive(folder: Path, out: Path, codec: str) -> tuple[int, int]:
         # cache directory is skipped along with everything under it.
         if any(_reserved_member(part) for part in info.name.split("/")):
             return None
+        if info.islnk():
+            # gettarinfo recorded a repeat inode as a headers-only link member
+            # with size 0 -- tarfile's own round trip for it. add() re-checks
+            # isreg() on what this filter returns, and then reads the file
+            # again by ITS OWN path (not the first occurrence's), so turning
+            # the type back to a regular file is what makes the data follow.
+            info.type = tarfile.REGTYPE
+            info.linkname = ""
+            with contextlib.suppress(OSError):
+                info.size = (folder / info.name).stat().st_size
         members += 1
         total += info.size
         return info
@@ -188,6 +199,37 @@ def create_archive(folder: Path, out: Path, codec: str) -> tuple[int, int]:
         _add_children(archive, sorted(folder.iterdir(), key=lambda item: item.name))
 
     return members, total
+
+
+def unsupported_members(folder: Path) -> list[Path]:
+    """Non-reserved entries that cannot round-trip through this format.
+
+    Hard links are handled by ``create_archive``'s filter, but a symlink, a
+    fifo, a socket or a device node has no regular-file content for tar to
+    carry -- real-world cases are ``.venv/bin/python*``, bundled frameworks
+    and ``cp -al`` trees. ``followlinks=False`` so a symlinked directory is
+    reported once, as itself, rather than walked into.
+    """
+    found: list[Path] = []
+    for root, dirs, files in os.walk(folder, followlinks=False):
+        root_path = Path(root)
+        kept_dirs = []
+        for name in dirs:
+            candidate = root_path / name
+            if _reserved_member(name):
+                continue
+            if candidate.is_symlink():
+                found.append(candidate)
+            else:
+                kept_dirs.append(name)
+        dirs[:] = kept_dirs
+        for name in files:
+            if _reserved_member(name):
+                continue
+            candidate = root_path / name
+            if candidate.is_symlink() or not candidate.is_file():
+                found.append(candidate)
+    return found
 
 
 def verify_archive(path: Path, codec: str, expected_members: int) -> None:
@@ -322,6 +364,47 @@ def select_version(arch: dict[str, object], spec: str | None) -> dict[str, objec
     )
 
 
+def _version_remotes(entry: dict[str, object], recorded_dirs: Sequence[str]) -> list[str]:
+    """Where this one version actually landed.
+
+    A version recorded before this distinction existed carries no ``remotes``
+    key of its own; its location is assumed to be the folder's whole
+    historical union, which is what pruning already assumed before there was
+    a per-version record. A version this run created carries only the
+    remotes it was actually copied to -- not every remote the folder has ever
+    used, which is what let a push to a *second* remote prune the object off
+    the *first*, one it had never touched.
+    """
+    if "remotes" in entry:
+        return get_recorded_remotes(entry)
+    return list(recorded_dirs)
+
+
+def _already_deleted(tail: str) -> bool:
+    """True when a failed ``deletefile`` means the object was already gone.
+
+    Covers rclone's "object not found" and "directory not found" wording
+    across backends -- a surplus version pruning never pushed to is not a
+    failure to clean up, it is already clean.
+    """
+    return "not found" in tail.lower()
+
+
+def _remote_parent(recorded_dir: str) -> str:
+    """The directory a sibling object actually lands in, for "same remote" checks.
+
+    ``remote_archive_object`` writes beside the folder's mirror path, not
+    inside it, so two recorded dirs that differ only in their folder-name
+    tail -- the before and after of a ``rename`` -- still put every version's
+    object in one physical directory. Comparing the recorded dirs themselves
+    would see a rename as a move to a remote the newer version never used,
+    and leave the older version's entry stuck forever.
+    """
+    base = recorded_dir.rstrip("/")
+    head, sep, _ = base.rpartition("/")
+    return head if sep else base
+
+
 def prune_versions(arch: dict[str, object], recorded_dirs: Sequence[str], keep: int) -> int:
     """Drop all but the newest ``keep`` objects. Returns how many went.
 
@@ -329,11 +412,17 @@ def prune_versions(arch: dict[str, object], recorded_dirs: Sequence[str], keep: 
     delete warns and keeps its entry for the next push -- see AGENTS.md,
     "Retention".
 
+    A surplus version is deleted only from the remote dirs where the newest
+    *surviving* version is also recorded -- dirs this run never touched for
+    that version are left alone, and the version stays indexed under whatever
+    locations still hold it. It drops out of ``versions`` entirely only once
+    none remain.
+
     ``versions`` arrives newest-first from ``record_version`` and stays that
-    way: survivors keep their order, and a failed delete goes back on the end.
-    **Do not sort it by object name** -- ``archive_object_name`` puts the
-    *folder* name first, so one ``rename`` inverts the index. See AGENTS.md,
-    "Retention".
+    way: survivors keep their order, and a surplus entry that is not fully
+    removed goes back on the end. **Do not sort it by object name** --
+    ``archive_object_name`` puts the *folder* name first, so one ``rename``
+    inverts the index. See AGENTS.md, "Retention".
     """
     if keep <= 0:
         return 0
@@ -343,39 +432,66 @@ def prune_versions(arch: dict[str, object], recorded_dirs: Sequence[str], keep: 
         return 0
 
     survivors = list(versions[:keep])
+    newest_remotes = _version_remotes(survivors[0], recorded_dirs)
     removed = 0
+    held_back: list[dict[str, object]] = []
     for entry in surplus:
         name = _mstr(entry, "name")
         if not name:
             continue
-        # Deduplicated: `recorded_dirs` is a historical union, and entries
-        # that differ can still resolve to the same sibling object.
-        failed = False
-        for target in dict.fromkeys(remote_archive_object(d, name) for d in recorded_dirs):
+        entry_remotes = _version_remotes(entry, recorded_dirs)
+        newest_parents = {_remote_parent(d) for d in newest_remotes}
+        # Deduplicated: several recorded dirs can resolve to the same sibling
+        # object (a rename leaves both the old and new path on record).
+        attempt = [d for d in dict.fromkeys(entry_remotes) if _remote_parent(d) in newest_parents]
+        deleted: list[str] = []
+        for target_dir in attempt:
+            target = remote_archive_object(target_dir, name)
             proc = external.run_rclone(["deletefile", target], capture_output=True)
-            if proc.returncode != 0:
-                warn(f"Could not remove {target}:\n{rclone_tail(proc)}")
-                failed = True
-        if failed:
-            survivors.append(entry)
+            if proc.returncode == 0:
+                deleted.append(target_dir)
+                continue
+            tail = rclone_tail(proc)
+            if _already_deleted(tail):
+                deleted.append(target_dir)
+                continue
+            warn(f"Could not remove {target}:\n{tail}")
+        remaining = [d for d in entry_remotes if d not in deleted]
+        if remaining:
+            entry["remotes"] = remaining
+            held_back.append(entry)
         else:
             removed += 1
-    arch["versions"] = survivors
+    arch["versions"] = [*survivors, *held_back]
     return removed
 
 
-def would_prune(existing: dict[str, object], keep: int) -> int:
+def would_prune(
+    existing: dict[str, object], dests: Sequence[str], recorded_dirs: Sequence[str], keep: int
+) -> int:
     """How many copies a real push would remove, counted from the dry-run side.
 
-    Pruning happens *after* the new version is recorded, so a dry-run that
-    measured the current list would report one too few -- and a --dry-run that
-    understates what the real run deletes is worse than no output at all.
+    Pruning happens *after* the new version is recorded, and now only removes
+    a surplus version from dirs the newest version actually reached, so the
+    projection has to simulate that newest version too -- ``dests`` is where
+    *this* run's copies would land, known before any of them actually happen.
     """
     if keep <= 0:
         return 0
     prior = existing.get("archive")
-    incoming = len(archive_versions(prior if isinstance(prior, dict) else None)) + 1
-    return max(incoming - keep, 0)
+    versions = archive_versions(prior if isinstance(prior, dict) else None)
+    incoming: dict[str, object] = {"remotes": list(dests)}
+    surplus = [incoming, *versions][keep:]
+    if not surplus:
+        return 0
+    newest_remotes = _version_remotes(incoming, recorded_dirs)
+    removed = 0
+    for entry in surplus:
+        entry_remotes = _version_remotes(entry, recorded_dirs)
+        newest_parents = {_remote_parent(d) for d in newest_remotes}
+        if entry_remotes and all(_remote_parent(d) in newest_parents for d in entry_remotes):
+            removed += 1
+    return removed
 
 
 def record_version(

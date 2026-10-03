@@ -48,3 +48,53 @@ def test_matches_pattern_exact_is_equality_not_substring() -> None:
 def test_ensure_directory_is_silent(archive: Path, capsys: pytest.CaptureFixture[str]) -> None:
     paths.ensure_directory(archive / "Project" / "scratch")
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    ("parts", "label"),
+    [
+        ((), "G:"),
+        (("Project",), "G:Project"),
+        (("old",), "G:Old"),
+        (("Project", "P0028 GWArchive"), "P28:GWArchive"),
+        (("Project", "P0028 GWArchive", "src", "deep"), "P28:GWArchive"),
+        (("Project", "P0028 GWArchive", "P0028.01 Docs"), "P28:GWArchive"),
+        (("Archive", "A0001 Gamma"), "A1:Gamma"),
+        (("Project", "P0007"), "P7"),
+        (("Old", "2026-01-05-P0001-Beta", "sub"), "Old:Beta"),
+        (("Old", "2026-01-05-P0001-"), "Old:P1"),
+        (("Project", "scratch"), None),
+        (("BACKUP",), None),
+        (("BACKUP", "P0001 Alpha"), None),
+    ],
+)
+def test_location_label(parts: tuple[str, ...], label: str | None) -> None:
+    assert naming.location_label(parts) == label
+
+
+def test_location_label_deepest_names_the_innermost_subfolder() -> None:
+    inside = ("Project", "P0028 GWArchive", "P0028.01 Docs", "drafts")
+    assert naming.location_label(inside, deepest=True) == "P28.01:Docs"
+    assert naming.location_label(("Project", "P0028 GWArchive", "P0028.02"), deepest=True) == "P28.02"
+    # No subfolder to be deeper in: the top-level label, not None.
+    assert naming.location_label(("Project", "P0028 GWArchive", "src"), deepest=True) == "P28:GWArchive"
+
+
+def test_location_label_strips_what_could_escape_a_title_sequence() -> None:
+    """The label is written inside an OSC title sequence. A folder name
+    carrying ESC or BEL would end that sequence and begin one of its own.
+    """
+    label = naming.location_label(("Project", "P0001 Esc\x1b]0;pwned\x07 \x9b\udcff"))
+    assert label == "P1:Esc]0;pwned"
+    assert naming.location_label(("Project", "P0001 \x1b\x07")) == "P1"
+
+
+def test_parts_below_matches_by_inode_through_a_symlinked_base(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    (real / "Project" / "P0001 Alpha").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(real)
+    inside = (real / "Project" / "P0001 Alpha").resolve()
+    assert paths.parts_below(inside, tmp_path / "link") == ("Project", "P0001 Alpha")
+    assert paths.parts_below(real.resolve(), tmp_path / "link") == ()
+    assert paths.parts_below(tmp_path.resolve(), real) is None
+    assert paths.parts_below(inside, tmp_path / "missing") is None

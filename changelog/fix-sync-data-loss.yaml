@@ -1,0 +1,220 @@
+bug fix:
+  - title: "Pruning no longer deletes an object from a remote this push never reached"
+    description: |
+      `prune_versions` used to run `deletefile` against every directory the
+      tombstone had ever recorded for the folder, not just the remotes the
+      current push actually wrote to. Pushing the same folder to two
+      different remotes in turn, with the default `--keep 1`, emptied the
+      first remote the moment the second push pruned -- the only output was a
+      NOTICE about a failed delete on the second remote, where the old object
+      had never existed, and that failed delete kept the stale entry around
+      forever, growing the version list past `keep` and shifting `--version
+      N` numbering.
+
+      Every version now records which remotes it actually reached. An old
+      version is only deleted from a remote where a newer, kept version is
+      also recorded -- compared by the directory an object's sibling path
+      actually resolves to, so a `rename` between pushes is recognized as the
+      same physical location rather than a remote the newer version never
+      touched. A failed `deletefile` whose error means the object was already
+      gone ("object not found" / "directory not found") now counts as a
+      successful prune instead of a failure that keeps retrying forever. `pull`
+      and `restore` also resolve their source from the selected version's own
+      recorded remotes first, falling back to the folder's historical union
+      only when the version has none of its own.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/tarball.py
+        - src/gwarchive/sync.py
+        - src/gwarchive/commands/upload.py
+        - src/gwarchive/commands/download.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "A corrupt tombstone is refused with exit 2, instead of being read as no tombstone at all"
+    description: |
+      `push`, `offload`, `pull` and `restore` used to call the tolerant
+      `read_tombstone`, which returns the same thing for "corrupt" as it does
+      for "absent". Re-offloading a folder whose tombstone had been truncated
+      -- by a crash, or an ENOSPC mid-write -- replaced the version index
+      with a fresh, empty one and uploaded a 0-member archive, orphaning the
+      real archive on the remote with nothing left pointing at it. A
+      tombstone that is not valid UTF-8 raised `UnicodeDecodeError`, uncaught,
+      crashing every one of those commands instead.
+
+      The four sync commands now call `require_tombstone`, which exits 2 with
+      a `verify` hint on a corrupt or non-object tombstone rather than
+      treating it as absent. `write_tombstone` is now atomic: a temp file
+      beside the real one, flushed and fsynced, then renamed over it, so a
+      crash mid-write never leaves a half-written file for the next read to
+      call corrupt. `UnicodeDecodeError`, a `ValueError` subclass, is now
+      caught alongside `json.JSONDecodeError`.
+
+      `offload` also refuses a folder with nothing to archive: a single named
+      target dies outright, including under `--dry-run`, and a category sweep
+      skips an empty folder the same way it already skips one that is already
+      offloaded.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/tombstone.py
+        - src/gwarchive/sync.py
+        - src/gwarchive/commands/upload.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "push refuses an offloaded folder that still holds local files, instead of claiming it is already backed up"
+    description: |
+      `pull` leaves `offloaded_at` set on purpose, so a folder that was pulled
+      and then edited -- or left with leftovers by an interrupted `offload` --
+      still reads as offloaded. `push` used to print `Skipped ... --
+      offloaded, already on the remote` and do nothing, which is false: the
+      remote does not have what is on disk. `restore` unpacked the archive
+      over the edits without even a warning.
+
+      `push` now refuses with an explanation and a hint pointing at the new
+      `restore --keep-local`, which clears the offloaded status using the
+      files already on disk, fetching nothing. `pull` and `restore` now
+      gather every target's local-file exposure before touching any of them,
+      and ask once for the whole batch rather than warning folder by folder
+      after some of them are already overwritten; `-y`/`--yes` skips the
+      prompt, and `--json` without `--yes` refuses outright since there is no
+      prompt for it to answer. A dry run now reports `would_overwrite_local`
+      per folder.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/commands/upload.py
+        - src/gwarchive/commands/download.py
+        - src/gwarchive/sync.py
+        - src/gwarchive/options.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "Hard-linked members no longer lose their bytes on extraction, and symlinks/special files are refused up front"
+    description: |
+      `tarfile` records a repeat inode as a headers-only link member with
+      size 0 -- its own round trip for a hard link. Left alone, extracting an
+      archive that contained one dropped the bytes for every name but the
+      first occurrence of that inode. The packer's member filter now rewrites
+      a hard-linked member to a regular file with its real size, so every
+      name round-trips with its content.
+
+      A symlink, a fifo, a socket or a device node has no regular-file
+      content for tar to carry at all. `offload` now refuses up front -- before
+      anything is staged, confirmed or deleted, including under `--dry-run` --
+      naming up to ten offending paths per folder. `push` cannot delete
+      anything, so it only warns and still uploads what it can.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/tarball.py
+        - src/gwarchive/commands/upload.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "offload's local delete can no longer sweep a reserved path nested inside a real subfolder"
+    description: |
+      The delete loop only checked reserved names among a folder's immediate
+      children, then handed any subdirectory straight to `shutil.rmtree`,
+      which does not care what the rest of the archive's rules consider
+      reserved. A `.gwarchive-*` name one level deeper than the top was
+      removed along with everything around it. The delete now walks the tree
+      bottom-up, checks every path at every depth against the same rule that
+      decided what was packed, never calls `rmtree`, and only removes a
+      directory once `rmdir` proves it is actually empty.
+
+      A file created or changed after the pre-upload snapshot was taken --
+      but before the archive finished uploading -- is also no longer deleted
+      sight-unseen: only a path whose size and mtime still match the snapshot
+      is removed, and anything left behind for that reason is reported with a
+      warning rather than silently kept or silently lost. This applies to
+      both the compressed and `--no-compress` transfer paths.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/sync.py
+        - src/gwarchive/commands/upload.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "A push that omits --keep now falls back to the folder's own recorded retention, not a hardcoded 1"
+    description: |
+      `keep_default` only ever consulted `--keep` and `$GWARCHIVE_KEEP`
+      before defaulting to 1, so a folder first pushed with `--keep 3` had
+      its retention silently dropped to 1 on the very next push that omitted
+      the flag, pruning two versions the user had explicitly asked to keep.
+      It now falls back to the archive block's own recorded `keep` before
+      defaulting to 1, and `--dry-run` uses the same fallback so its
+      prediction matches what the real push would do.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/sync.py
+        - src/gwarchive/commands/upload.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "offload deletes only what it archived, unchanged"
+    description: |
+      offload used to delete whatever the folder held once the upload
+      finished, which can be hours after packing. A file created or edited in
+      that window was deleted without ever being uploaded. offload now
+      records every file's size and mtime before packing and deletes only
+      files that still match; anything new or changed stays local and is
+      named in a warning.
+
+      `restore --keep-local` also refuses, without `--yes`, a folder holding
+      fewer files than were offloaded: marking such leftovers live would let
+      the next push replace the complete archive with a partial one.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/sync.py
+        - src/gwarchive/commands/upload.py
+        - src/gwarchive/commands/download.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null

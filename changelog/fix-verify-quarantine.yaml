@@ -1,0 +1,53 @@
+bug fix:
+  - title: "verify --quarantine no longer overwrites or nests into an earlier run"
+    description: |
+      The quarantine destination was `BACKUP/<date>/`, so a second run on the
+      same day silently overwrote or nested into whatever the first run had
+      already moved there. It is now `BACKUP/<timestamp>/`, with second
+      resolution, and a same-second collision is refused with a clear message
+      rather than papered over -- `--dry-run` reports the same refusal instead
+      of predicting a move that the real run would deny.
+
+      Root-entry identity is now checked by inode rather than by name, so a
+      category or BACKUP itself that was renamed in place to another case on a
+      case-insensitive volume (`project`, `Backup`) is recognized as what it
+      already is, instead of being offered to `--quarantine` -- which could
+      have moved a whole category tree, or BACKUP, into itself. A directory
+      that is genuinely distinct and only coincidentally similarly named, which
+      is the normal case on a case-sensitive filesystem, is still flagged.
+
+      `verify` also flags a folder whose tombstone records a different prefix
+      than the folder's own -- the telltale sign of a tombstone carried over by
+      `cp` or left stale by `mv`.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/commands/verify.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null
+
+  - title: "verify --fix/--quarantine --dry-run no longer reports a preview as resolved"
+    description: |
+      A dry-run preview used to set the same field a real fix sets, so it was
+      excluded from the error count and the command exited 0 having changed
+      nothing on disk. Previews now use a separate field, stay counted as
+      unresolved, and the exit code reflects the archive's actual state.
+      `--json` also carries a top-level `dry_run` field.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/commands/verify.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null

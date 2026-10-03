@@ -13,6 +13,7 @@ Layer 0: stdlib only. Nothing here may import another gwarchive module.
 """
 
 import re
+import unicodedata
 from pathlib import Path
 
 # Constants
@@ -134,3 +135,60 @@ def _reserved_path(path: Path, root: Path) -> bool:
 def matches_pattern(name: str, pattern: str, exact: bool) -> bool:
     """--exact means equality. Without it, a case-insensitive substring."""
     return name == pattern if exact else pattern.lower() in name.lower()
+
+
+# What `here` calls the archive itself, and the stem of a category's label:
+# `G:` reads as a drive and `G:Project` as a directory on it.
+ARCHIVE_LABEL = "G:"
+# Between a folder's short prefix and its descriptor in a `here` label. A
+# colon, so every label reads the same way as `G:Project` -- where, then what
+# -- and in one ASCII character, since tab titles are narrow and not every
+# tmux/locale pairing renders a middle dot.
+LABEL_SEPARATOR = ":"
+
+
+def short_prefix(prefix: str) -> str:
+    """``P0028`` -> ``P28``: the form you type, as in ``gcd P28``."""
+    return f"{prefix[0]}{int(prefix[1:])}"
+
+
+def _label(head: str, descriptor: str | None) -> str:
+    # Cc is every C0/C1 control, ESC and BEL included; Cs is what
+    # surrogateescape makes of a name that is not valid UTF-8. The label is
+    # written into an OSC title sequence, where an ESC or BEL from a folder
+    # name would end the sequence early and start one of its own.
+    clean = "".join(ch for ch in descriptor or "" if unicodedata.category(ch) not in ("Cc", "Cs")).strip()
+    return f"{head}{LABEL_SEPARATOR}{clean}" if clean else head
+
+
+def location_label(parts: tuple[str, ...], *, deepest: bool = False) -> str | None:
+    """A short name for a place in the archive, given its path below the root.
+
+        ()                                       G:
+        ("Project",)                             G:Project
+        ("Project", "P0028 GWArchive", "src")    P28:GWArchive
+        ("Old", "2026-01-05-P0001-Beta")         Old:Beta
+        (..., "P0028.01 Docs"), deepest=True     P28.01:Docs
+
+    None anywhere there is no archive name to give: a stray directory at the
+    root, or an unprefixed one in a category. A retired folder is labelled by
+    the category it went to rather than its prefix, since that is the thing
+    worth knowing about it at a glance.
+    """
+    if not parts:
+        return ARCHIVE_LABEL
+    letter = CATEGORY_BY_NAME.get(parts[0].upper())
+    if letter is None:
+        return None
+    if len(parts) == 1:
+        return ARCHIVE_LABEL + CATEGORIES[letter]
+    if deepest:
+        for part in reversed(parts[2:]):
+            if sub := SUBFOLDER_RE.match(part):
+                return _label(f"{short_prefix(sub.group(1))}.{sub.group(2)}", sub.group(3))
+    if not (parsed := name_parts(parts[1])):
+        return None
+    prefix, descriptor = parsed
+    if OLD_RE.match(parts[1]):
+        return _label(CATEGORIES["O"], descriptor or short_prefix(prefix))
+    return _label(short_prefix(prefix), descriptor)

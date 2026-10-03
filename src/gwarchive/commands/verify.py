@@ -12,6 +12,7 @@ code is the whole report.
 render_ and write_verify_report each derive their own counts, so they cannot
 disagree."""
 
+import os
 import shutil
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ from gwarchive.output import (
     note,
     ok,
     plural,
+    warn,
 )
 from gwarchive.paths import (
     category_dirs,
@@ -86,6 +88,12 @@ class Issue:
     ``target`` and ``action`` are how a finding tells --fix and --quarantine
     what to operate on, rather than having the path recovered by string-parsing
     ``message``. See AGENTS.md, "verify".
+
+    ``resolution`` means the fix actually ran; ``preview`` is its --dry-run-only
+    counterpart. They are separate fields, not one field with a "would " prefix,
+    because ``split_issues`` treats a resolved finding as no longer live --
+    collapsing the two meant a dry run reported fixed findings as resolved and
+    exited 0 having changed nothing on disk. See REVIEW M6.
     """
 
     group: str
@@ -93,6 +101,7 @@ class Issue:
     fix_hint: str = ""
     severity: str = ERROR
     resolution: str = ""
+    preview: str = ""
     target: Path | None = None
     action: str = ""
 
@@ -111,11 +120,18 @@ class Issue:
         }
 
     def line(self) -> Text:
-        """One finding, symbol first, with its resolution or its remedy dimmed."""
+        """One finding, symbol first, with its resolution or its remedy dimmed.
+
+        A dry-run preview keeps the finding's real kind (error/warn): nothing
+        was actually done, so it must not render as the green "ok" a real
+        resolution gets.
+        """
         kind = "ok" if self.resolution else ("error" if self.severity == ERROR else "warn")
         body = Text(self.message)
         if self.resolution:
             body.append(f"  [{self.resolution}]", style=STYLES["caption"])
+        elif self.preview:
+            body.append(f"  [{self.preview}]", style=STYLES["caption"])
         elif self.fix_hint:
             body.append(f"  ({self.fix_hint})", style=STYLES["caption"])
         return _decorate(kind, body, indent=INDENT)
@@ -148,13 +164,41 @@ def collect_structure_issues(base_path: Path) -> Iterator[Issue]:
             )
 
 
+def _same_entry(a: Path, b: Path) -> bool:
+    """True when ``a`` and ``b`` name the same directory, by inode.
+
+    Not a casefold comparison: on a case-sensitive filesystem ``project`` and
+    ``Project`` really are two different directories and must stay two
+    findings. On a case-insensitive one, a category or BACKUP renamed in
+    place (only its casing changed, same inode) resolves ``b`` right back to
+    ``a`` through the filesystem's own case-insensitive lookup -- no casefold
+    needed, and nothing to get wrong by duplicating that logic here.
+    """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def collect_root_issues(base_path: Path) -> Iterator[Issue]:
-    """Unrecognized entries at the archive root; the path rides on ``target``."""
+    """Unrecognized entries at the archive root; the path rides on ``target``.
+
+    A name-only comparison passes ``BACKUP`` against a root entry literally
+    spelled ``Backup``, or a category against one spelled in another case --
+    both real possibilities on a case-insensitive volume, where renaming a
+    directory in place only changes its displayed casing and leaves it the
+    same inode. Flagging either as unrecognized would offer it to
+    --quarantine: moving BACKUP into itself, or an entire category tree into
+    BACKUP/. The identity check below is what a plain string or casefold
+    comparison cannot give: it still rejects a genuinely distinct,
+    same-named directory on a case-sensitive filesystem. See REVIEW H3.
+    """
     if not base_path.exists():
         return
 
     allowed_dirs = CATEGORY_NAMES | {"BACKUP"}
     allowed_files = {".gitignore", "README.md"}
+    allowed_paths = [base_path / name for name in allowed_dirs]
 
     for item in sorted(base_path.iterdir(), key=lambda p: p.name):
         if item.name.startswith("."):
@@ -163,6 +207,8 @@ def collect_root_issues(base_path: Path) -> Iterator[Issue]:
         if not (is_dir or item.is_file()):
             continue  # a broken symlink or a FIFO: skipped before, skipped now
         if item.name in (allowed_dirs if is_dir else allowed_files):
+            continue
+        if is_dir and any(_same_entry(item, allowed) for allowed in allowed_paths):
             continue
         yield Issue(
             "Root contents",
@@ -267,6 +313,18 @@ def collect_tombstone_issues(base_path: Path) -> Iterator[Issue]:
                 yield Issue("Offload", f"Invalid metadata format in {shown}: expected JSON object")
                 continue
 
+            recorded_prefix = data.get("prefix")
+            own_prefix = folder_prefix(folder.name)
+            if isinstance(recorded_prefix, str) and own_prefix and recorded_prefix != own_prefix:
+                # cp copies the tombstone wholesale (REVIEW C4): the copy's
+                # own prefix is fresh, but the metadata it carried over still
+                # names the folder it was copied from.
+                yield Issue(
+                    "Offload",
+                    f"{shown} tombstone records prefix {recorded_prefix}, but the folder's own"
+                    f" prefix is {own_prefix} (copied or carried over by cp/mv)",
+                )
+
             arch = data.get("archive")
             if arch is not None and not isinstance(arch, dict):
                 yield Issue("Offload", f"Invalid archive block in {shown}: expected JSON object")
@@ -310,7 +368,8 @@ def verify(
         bool, typer.Option("--fix", help="Create missing category directories (safe, idempotent)")
     ] = False,
     quarantine: Annotated[
-        bool, typer.Option("--quarantine", help="Also MOVE unrecognized root entries into BACKUP/<date>/")
+        bool,
+        typer.Option("--quarantine", help="Also MOVE unrecognized root entries into BACKUP/<timestamp>/"),
     ] = False,
     yes: Annotated[
         bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt for --quarantine")
@@ -342,9 +401,11 @@ def verify(
         for issue in issues:
             if issue.action != "create" or issue.target is None:
                 continue
-            if not dry_run:
+            if dry_run:
+                issue.preview = "would create"
+            else:
                 ensure_directory(issue.target)
-            issue.resolution = "would create" if dry_run else "created"
+                issue.resolution = "created"
 
     strays = [(i, i.target) for i in issues if i.action == "quarantine" and i.target is not None]
     if quarantine and strays:
@@ -355,15 +416,29 @@ def verify(
         for _, item in strays:
             listing.append(f"{item.name}\n")
         if dry_run or confirm_destructive(listing, "Move them?", yes=yes):
-            # Timestamped, so repeated runs never nest one quarantine inside
-            # another.
-            backup_dir = base_path / "BACKUP" / clock.today()
+            # A second-resolution stamp, not a date: two runs the same day
+            # must not share a destination. A same-second collision (a
+            # patched clock in tests, or two runs that close together) is
+            # refused below rather than letting shutil.move either overwrite
+            # or nest into what the earlier run wrote. See REVIEW H3.
+            backup_dir = base_path / "BACKUP" / clock.archive_stamp()
             for issue, item in strays:
+                destination = backup_dir / item.name
+                if os.path.lexists(destination):
+                    reason = f"BACKUP/{backup_dir.name}/{item.name} already exists"
+                    if dry_run:
+                        # The real run would refuse here too -- a dry run must
+                        # not predict the success it would be denied. See
+                        # AGENTS.md, dry-run rule.
+                        issue.preview = f"would refuse -- {reason}"
+                    else:
+                        warn(f"{reason} -- not quarantining {item.name}")
+                    continue
                 if dry_run:
-                    issue.resolution = f"would move to BACKUP/{backup_dir.name}/{item.name}"
+                    issue.preview = f"would move to BACKUP/{backup_dir.name}/{item.name}"
                     continue
                 ensure_directory(backup_dir)
-                run_fs(f"quarantine {item.name}", shutil.move, str(item), str(backup_dir / item.name))
+                run_fs(f"quarantine {item.name}", shutil.move, str(item), str(destination))
                 issue.resolution = f"moved to BACKUP/{backup_dir.name}/{item.name}"
 
     errors, notices = split_issues(issues)
@@ -374,6 +449,7 @@ def verify(
                 "ok": not errors,
                 "errors": len(errors),
                 "notices": len(notices),
+                "dry_run": dry_run,
                 "issues": [issue.as_dict() for issue in issues],
             }
         )

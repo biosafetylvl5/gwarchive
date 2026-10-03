@@ -1,0 +1,31 @@
+enhancement:
+  - title: "`here` names the folder you're in, and shell-init puts it in the terminal title"
+    description: |
+      `gwarchive here` prints a short name for your place in the archive:
+      `P28:GWArchive` anywhere inside `Project/P0028 GWArchive`, `Old:Beta`
+      inside a retired folder, `G:Project` in a category and `G:` at the
+      root. `--deepest` names the subfolder instead (`P28.01:Docs`).
+      Anywhere else it prints nothing and exits 1, like `cd`, so a caller
+      can fall back with `||`.
+
+      `shell-init` now also installs a prompt hook, for zsh and bash, that
+      sets the terminal title from it, falling back to the directory name
+      outside the archive. It runs `here` only when the directory changes.
+      This is on by default; `shell-init --no-title` leaves the title
+      alone. Control characters are stripped from the title, so a folder
+      name cannot smuggle in a terminal escape sequence.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/naming.py
+        - src/gwarchive/paths.py
+        - src/gwarchive/commands/shell.py
+        - README.md
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null

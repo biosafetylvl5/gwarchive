@@ -67,6 +67,27 @@ def display(path: Path, base: Path) -> str:
     return str(path) if relative.startswith("..") else relative
 
 
+def parts_below(path: Path, base: Path) -> tuple[str, ...] | None:
+    """``path``'s components below the archive root, or None when it is not inside it.
+
+    Matched by inode rather than by string. The cwd comes back from the OS
+    physical and in on-disk case, while $GWARCHIVE_BASE may be a symlink or
+    typed in another case, and either difference defeats ``relative_to``.
+    One stat per ancestor, no listing: this runs on every directory change.
+    """
+    try:
+        root = base.stat()
+    except OSError:
+        return None
+    for ancestor in (path, *path.parents):
+        try:
+            if os.path.samestat(ancestor.stat(), root):
+                return path.relative_to(ancestor).parts
+        except OSError:
+            continue
+    return None
+
+
 def category_dirs(base_path: Path, only: str | None = None) -> list[tuple[str, Path]]:
     names = [only] if only else list(CATEGORIES.values())
     return [(name, base_path / name) for name in names if (base_path / name).exists()]

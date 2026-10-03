@@ -55,7 +55,23 @@ as the real thing (`Would move` vs `Moved`).
 ```bash
 eval "$(gwarchive shell-init)"
 gcd P1        # cd to the folder with that prefix, wherever it now lives
+gwarchive here   # the folder you're in, short: P28:GWArchive
 ```
+
+`shell-init` also sets the terminal title from `here` at each prompt:
+
+| Where you are | Title |
+|---|---|
+| `Project/P0028 GWArchive/src/...` | `P28:GWArchive` |
+| `Project/P0028 GWArchive/P0028.01 Docs` | `P28:GWArchive` (`here --deepest`: `P28.01:Docs`) |
+| `Old/2026-01-05-P0001-Beta` | `Old:Beta` |
+| `Project/` | `G:Project` |
+| the archive root | `G:` |
+| anywhere else | the directory name |
+
+It asks `here` only when the directory changes, and is skipped on
+`TERM=dumb`. Put the `eval` after a prompt framework that sets titles of its
+own (oh-my-zsh does), or pass `--no-title` to leave the title alone.
 
 ### Remote sync
 
@@ -67,11 +83,23 @@ gwarchive push P1        # upload, keep the local copy
 gwarchive offload P1     # upload, delete locally, leave a tombstone
 gwarchive pull P1        # fetch back
 gwarchive restore P1     # fetch back and clear the tombstone
+gwarchive restore P1 --keep-local   # clear the tombstone, keeping what's on disk, fetching nothing
 ```
 
 An offloaded folder keeps its name and prefix on disk while the bytes live on
 the remote. The tombstone it leaves — `.gwarchive-offload.json` — is also the
 version index; the tool never lists the remote to find out what is there.
+
+A folder that still holds local files despite being marked offloaded — pulled
+and then edited, or left behind by an interrupted `offload` — is something
+`push` now refuses rather than skipping as "already on the remote". Use
+`restore --keep-local` to resolve it from what is already on disk, or `restore`
+to fetch the remote's copy over it.
+
+`pull` and `restore` ask before overwriting local files the remote also has,
+with one prompt for the whole batch. Pass `-y`/`--yes` to skip it; `--json`
+without `--yes` refuses rather than prompting, since there is nothing to
+answer it with.
 
 Folders are pushed as one compressed object (`tar.zst`, falling back to
 `tar.gz` when `zstd` is absent), written as a *sibling* of the mirror path. The

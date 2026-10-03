@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from conftest import run
 
-from gwarchive import naming, tombstone
+from gwarchive import clock, naming, tombstone
 
 
 def test_verify_exits_nonzero_when_it_reports_errors(archive: Path) -> None:
@@ -167,12 +167,41 @@ def test_quarantine_moves_only_with_consent(archive: Path, stray: None) -> None:
     assert accepted.exit_code == 0
 
 
-def test_quarantine_is_dated_so_repeat_runs_do_not_nest(archive: Path, stray: None) -> None:
+def test_quarantine_is_stamped_not_dated(archive: Path, stray: None) -> None:
+    """A date-only destination let two same-day runs collide (REVIEW H3).
+
+    The directory now carries a full second-resolution stamp instead of just
+    the date.
+    """
     run("verify", "--quarantine", "--yes", "--path", archive)
     dated = list((archive / "BACKUP").iterdir())
     assert len(dated) == 1
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", dated[0].name)
+    assert re.fullmatch(r"\d{8}-\d{6}", dated[0].name)
     assert (dated[0] / "stray.txt").is_file()
+
+
+def test_quarantine_refuses_to_overwrite_an_earlier_run(
+    archive: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REVIEW H3: a same-second collision used to nest or overwrite silently.
+
+    Two runs landing on the same stamp (forced here, since real collisions
+    need two runs in the same second) must not let the second clobber or nest
+    into what the first wrote -- it must refuse with a clear message and
+    leave both the earlier quarantine and the new stray alone.
+    """
+    monkeypatch.setattr(clock, "archive_stamp", lambda: "20260101-000000")
+    (archive / "stray.txt").write_text("first")
+    first = run("verify", "--quarantine", "--yes", "--path", archive)
+    assert first.exit_code == 0
+
+    (archive / "stray.txt").write_text("second")
+    second = run("verify", "--quarantine", "--yes", "--path", archive)
+    assert second.exit_code == 1
+    assert "already exists" in second.stderr
+
+    assert (archive / "BACKUP" / "20260101-000000" / "stray.txt").read_text() == "first"
+    assert (archive / "stray.txt").read_text() == "second"
 
 
 def test_verify_dry_run_changes_nothing(archive: Path, stray: None) -> None:
@@ -180,6 +209,24 @@ def test_verify_dry_run_changes_nothing(archive: Path, stray: None) -> None:
     assert "would move" in result.stdout
     assert (archive / "stray.txt").is_file()
     assert not (archive / "BACKUP").exists()
+
+
+def test_quarantine_dry_run_would_refuse_a_collision(archive: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dry run must not predict success the real run would refuse.
+
+    See AGENTS.md's dry-run rule, and REVIEW H3's same-second collision case.
+    """
+    monkeypatch.setattr(clock, "archive_stamp", lambda: "20260101-000000")
+    (archive / "stray.txt").write_text("first")
+    run("verify", "--quarantine", "--yes", "--path", archive)
+
+    (archive / "stray.txt").write_text("second")
+    result = run("verify", "--quarantine", "--dry-run", "--path", archive)
+    assert result.exit_code == 1
+    assert "would refuse" in result.stdout
+    assert "would move" not in result.stdout
+    assert (archive / "BACKUP" / "20260101-000000" / "stray.txt").read_text() == "first"
+    assert (archive / "stray.txt").read_text() == "second"
 
 
 def test_cp_into_a_category_allocates_a_fresh_prefix(archive: Path) -> None:
@@ -280,3 +327,108 @@ def test_verify_flags_an_unreadable_archive_format(archive: Path) -> None:
     res = run("verify", "--path", archive)
     assert res.exit_code == 1
     assert "unreadable archive format" in res.stdout + res.stderr
+
+
+def _case_insensitive_fs(path: Path) -> bool:
+    """True when this filesystem treats two names differing only by case as one."""
+    probe = path / "CaseProbe"
+    probe.mkdir()
+    try:
+        return (path / "caseprobe").exists()
+    finally:
+        probe.rmdir()
+
+
+def test_renamed_category_is_not_offered_for_quarantine(archive: Path) -> None:
+    """REVIEW H3: a category renamed in place to another case is still that category.
+
+    On a case-insensitive volume, renaming "Project" to "project" changes only
+    the displayed casing -- same inode, same directory. A name-only comparison
+    against the allowed set would flag it as an unrecognized root entry and
+    offer to --quarantine it, which would move the whole category tree into
+    BACKUP/.
+    """
+    if not _case_insensitive_fs(archive):
+        pytest.skip("requires a case-insensitive filesystem")
+    (archive / "Project").rename(archive / "project")
+    result = run("verify", "--path", archive)
+    assert result.exit_code == 0
+    assert "Unrecognized" not in result.stdout
+
+
+def test_lowercase_backup_is_not_offered_for_quarantine(archive: Path) -> None:
+    """REVIEW H3: a root entry that is the same directory as BACKUP must not
+    be quarantined into itself.
+    """
+    if not _case_insensitive_fs(archive):
+        pytest.skip("requires a case-insensitive filesystem")
+    (archive / "Backup").mkdir()
+    result = run("verify", "--path", archive)
+    assert result.exit_code == 0
+    assert "Unrecognized" not in result.stdout
+
+
+def test_distinct_lowercase_directory_is_still_a_stray(archive: Path) -> None:
+    """REVIEW H3: on a case-sensitive filesystem, "project" really is a
+    different, unrecognised directory and the identity check must not
+    over-match on name alone.
+    """
+    if _case_insensitive_fs(archive):
+        pytest.skip("requires a case-sensitive filesystem")
+    (archive / "project").mkdir()
+    result = run("verify", "--path", archive)
+    assert result.exit_code == 1
+    assert "Unrecognized directory in root: project" in result.stdout
+
+
+def test_verify_flags_a_tombstone_prefix_that_does_not_match_its_folder(archive: Path) -> None:
+    """REVIEW C4: cp copies the tombstone wholesale, so the copy's own prefix
+    and its carried-over tombstone prefix can diverge.
+    """
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    tombstone.write_tombstone(folder, {"prefix": "P0099"})
+
+    res = run("verify", "--path", archive)
+    assert res.exit_code == 1
+    assert "P0099" in res.stdout
+    assert "P0001" in res.stdout
+
+
+def test_verify_json_includes_the_prefix_mismatch_finding(archive: Path) -> None:
+    """REVIEW C4: the mismatch is a finding like any other, so --json carries it."""
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    tombstone.write_tombstone(folder, {"prefix": "P0099"})
+
+    payload = json.loads(run("verify", "--json", "--path", archive).stdout)
+    assert payload["ok"] is False
+    assert any("P0099" in i["message"] for i in payload["issues"])
+
+
+def test_fix_dry_run_does_not_count_as_resolved(tmp_path: Path) -> None:
+    """REVIEW M6: a dry-run fix used to count as resolved and exit 0 having
+    created nothing.
+    """
+    base = tmp_path / "unfixed"
+    result = run("verify", "--fix", "--dry-run", "--path", base)
+    assert result.exit_code == 1
+    assert "would create" in result.stdout
+    assert not base.exists()
+
+
+def test_quarantine_dry_run_does_not_count_as_resolved(archive: Path, stray: None) -> None:
+    """REVIEW M6: same bug, on the --quarantine side."""
+    result = run("verify", "--quarantine", "--dry-run", "--path", archive)
+    assert result.exit_code == 1
+    assert "would move" in result.stdout
+
+
+def test_verify_json_reports_dry_run(archive: Path, stray: None) -> None:
+    """REVIEW M6: --json gained a top-level dry_run field."""
+    payload = json.loads(run("verify", "--quarantine", "--dry-run", "--json", "--path", archive).stdout)
+    assert payload["dry_run"] is True
+    assert payload["ok"] is False
+
+    payload = json.loads(run("verify", "--json", "--path", archive).stdout)
+    assert payload["dry_run"] is False

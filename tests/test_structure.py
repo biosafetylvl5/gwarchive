@@ -185,6 +185,7 @@ def test_every_command_is_registered_in_help_order() -> None:
         "verify",
         "clears",
         "cd",
+        "here",
         "shell-init",
     ]
     actual = [c.name or (c.callback.__name__ if c.callback else "?") for c in app.registered_commands]

@@ -376,6 +376,7 @@ def test_offload_deletes_local_contents_and_leaves_tombstone(
 def test_offload_refuses_already_offloaded(archive: Path, rclone: Callable[..., list[list[str]]]) -> None:
     rclone()
     run("create", "P", "Alpha", "--path", archive)
+    (archive / "Project" / "P0001 Alpha" / "doc.txt").write_text("data")
     run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
 
     # Second offload fails
@@ -405,6 +406,7 @@ def test_restore_downloads_and_clears_offloaded_status(
     calls = rclone()
     run("create", "P", "Alpha", "--path", archive)
     folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("data")
     run("offload", "P1", "--remote", "nas:archive", "--yes", "--no-compress", "--path", archive)
     assert tombstone.is_offloaded(folder)
 
@@ -427,6 +429,7 @@ def test_list_marks_offloaded_folders(archive: Path, rclone: Callable[..., list[
     rclone()
     run("create", "P", "Alpha", "--path", archive)
     run("create", "P", "Beta", "--path", archive)
+    (archive / "Project" / "P0001 Alpha" / "doc.txt").write_text("data")
     run("offload", "P1", "--remote", "nas:archive", "--yes", "--no-compress", "--path", archive)
 
     table_res = run("list", "P", "--path", archive)
@@ -449,6 +452,8 @@ def test_stats_excludes_tombstone_and_shows_offloaded(
 ) -> None:
     rclone()
     run("create", "P", "Alpha", "--path", archive)
+    doc = archive / "Project" / "P0001 Alpha" / "doc.txt"
+    doc.write_text("data")
     run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
 
     res = run("stats", "--path", archive)
@@ -476,6 +481,7 @@ def test_offload_dry_run_on_already_offloaded_folder_reports_instead_of_dying(
 ) -> None:
     rclone()
     run("create", "P", "Alpha", "--path", archive)
+    (archive / "Project" / "P0001 Alpha" / "doc.txt").write_text("data")
     run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
 
     res = run("offload", "P1", "--remote", "nas:archive", "--dry-run", "--path", archive)
@@ -544,6 +550,7 @@ def test_restore_category_skips_live_folders(archive: Path, rclone: Callable[...
     calls = rclone()
     run("create", "P", "Alpha", "--path", archive)
     run("create", "P", "Beta", "--path", archive)
+    (archive / "Project" / "P0001 Alpha" / "doc.txt").write_text("data")
     run("offload", "P1", "--remote", "nas:archive", "--yes", "--no-compress", "--path", archive)
 
     calls.clear()
@@ -882,6 +889,40 @@ def test_prune_does_not_retry_a_delete_it_already_made(
     assert "Removed 1 older copy" in res.stdout
 
 
+def test_prune_never_touches_a_remote_this_push_did_not_write_to(
+    archive: Path,
+    tmp_path: Path,
+    sample: Path,
+    rclone_local: list[list[str]],
+    stamps: Callable[[Sequence[str]], None],
+    gzip_codec: None,
+) -> None:
+    """Finding C3: pruning used to run ``deletefile`` against every remote the
+    tombstone had ever recorded, not just the ones the current push reached.
+
+    Pushing the same folder to two *different* remotes in turn, with the
+    default keep of 1, must not delete remA's object when remB's push prunes:
+    remA never received this push's version, so it has nothing newer on it
+    to justify deleting the old one, and an object a push never touched must
+    come out of the run untouched.
+    """
+    stamps(["20260101-000001", "20260101-000002"])
+    remote_a = tmp_path / "remA"
+    remote_b = tmp_path / "remB"
+
+    assert run("push", "P1", "--remote", remote_a, "--path", archive).exit_code == 0
+    res = run("push", "P1", "--remote", remote_b, "--path", archive)
+    assert res.exit_code == 0
+    assert "Removed" not in res.stdout
+
+    folder = archive / "Project" / "P0001 Alpha [draft]"
+    meta = tombstone.read_tombstone(folder) or {}
+    versions = meta["archive"]["versions"]  # type: ignore[index]
+    assert len(versions) == 2
+    assert list((remote_a / "Project").glob("*.tar.gz"))
+    assert list((remote_b / "Project").glob("*.tar.gz"))
+
+
 def test_keep_zero_never_removes_a_copy(
     archive: Path,
     tmp_path: Path,
@@ -943,13 +984,13 @@ def test_version_selects_an_older_copy_and_rejects_an_unknown_one(
     (folder / "notes.txt").write_text("second push\n")
     assert run("push", "P1", "--remote", remote, "--keep", 0, "--path", archive).exit_code == 0
 
-    assert run("pull", "P1", "--version", 2, "--path", archive).exit_code == 0
+    assert run("pull", "P1", "--version", 2, "--yes", "--path", archive).exit_code == 0
     assert (folder / "notes.txt").read_text() == "top level\n"
 
-    assert run("pull", "P1", "--version", 1, "--path", archive).exit_code == 0
+    assert run("pull", "P1", "--version", 1, "--yes", "--path", archive).exit_code == 0
     assert (folder / "notes.txt").read_text() == "second push\n"
 
-    res = run("pull", "P1", "--version", 9, "--path", archive)
+    res = run("pull", "P1", "--version", 9, "--yes", "--path", archive)
     assert res.exit_code == 2
     assert "No such version" in res.stderr
     assert "20260101-000001" in res.stderr
@@ -1035,7 +1076,11 @@ def test_pull_over_a_live_folder_warns_before_overwriting(
     rclone_local: list[list[str]],
     gzip_codec: None,
 ) -> None:
-    """Extraction rewrites every member, where rclone copy skipped unchanged ones."""
+    """Extraction rewrites every member, where rclone copy skipped unchanged ones.
+
+    C5+H1: a bare warning used to let the overwrite through unconditionally;
+    pulling over local files now needs a confirmation (``--yes`` here) first.
+    """
     remote = tmp_path / "remote"
     folder = sample
     assert run("push", "P1", "--remote", remote, "--path", archive).exit_code == 0
@@ -1043,11 +1088,46 @@ def test_pull_over_a_live_folder_warns_before_overwriting(
     (folder / "notes.txt").write_text("local edit\n")
     (folder / "untouched.txt").write_text("not in the archive\n")
 
-    res = run("pull", "P1", "--path", archive)
+    res = run("pull", "P1", "--yes", "--path", archive)
     assert res.exit_code == 0
-    assert "still holds local files" in res.stderr
     assert (folder / "notes.txt").read_text() == "top level\n"
     assert (folder / "untouched.txt").read_text() == "not in the archive\n"
+
+
+def test_pull_over_a_live_folder_without_yes_is_refused(
+    archive: Path,
+    tmp_path: Path,
+    sample: Path,
+    rclone_local: list[list[str]],
+    gzip_codec: None,
+) -> None:
+    """C5+H1: pulling over local files must stop and ask, not warn and proceed."""
+    remote = tmp_path / "remote"
+    folder = sample
+    assert run("push", "P1", "--remote", remote, "--path", archive).exit_code == 0
+    (folder / "notes.txt").write_text("local edit\n")
+
+    res = run("pull", "P1", "--path", archive, input="n\n")
+    assert res.exit_code == 1
+    assert (folder / "notes.txt").read_text() == "local edit\n"
+
+
+def test_pull_over_a_live_folder_under_json_without_yes_is_refused(
+    archive: Path,
+    tmp_path: Path,
+    sample: Path,
+    rclone_local: list[list[str]],
+    gzip_codec: None,
+) -> None:
+    """C5+H1: --json has no prompt to answer, so it must refuse outright."""
+    remote = tmp_path / "remote"
+    folder = sample
+    assert run("push", "P1", "--remote", remote, "--path", archive).exit_code == 0
+    (folder / "notes.txt").write_text("local edit\n")
+
+    res = run("pull", "P1", "--json", "--path", archive)
+    assert res.exit_code == 2
+    assert (folder / "notes.txt").read_text() == "local edit\n"
 
 
 def test_dry_run_counts_the_copy_the_real_push_would_remove(
@@ -1103,3 +1183,462 @@ def test_offload_prompt_states_the_scratch_it_needs(
     assert "packs" in summary and "one tar.gz object per folder" in summary
     assert "needs" in summary and "$TMPDIR" in summary
     assert "frees" in summary
+
+
+# ---------------------------------------------------------------------------
+# Finding C6 -- a corrupt tombstone must stop the run, not read as absent
+# ---------------------------------------------------------------------------
+
+
+def test_push_refuses_a_corrupt_tombstone(archive: Path, rclone: Callable[..., list[list[str]]]) -> None:
+    """Finding C6: a truncated tombstone used to read as "no tombstone", so a
+    re-push replaced the version index with a fresh, empty one instead of
+    stopping. ``require_tombstone`` must exit 2 with a fix hint instead.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("data")
+    (folder / naming.TOMBSTONE_NAME).write_text('{"prefix": "P0001", "archive":')  # truncated
+
+    res = run("push", "P1", "--remote", "nas:archive", "--path", archive)
+    assert res.exit_code == 2
+    assert naming.TOMBSTONE_NAME in res.stderr
+    assert "verify" in res.stderr
+
+
+def test_offload_refuses_a_non_utf8_tombstone(archive: Path, rclone: Callable[..., list[list[str]]]) -> None:
+    """Finding C6: a tombstone that is not valid UTF-8 raises UnicodeDecodeError,
+    a ValueError subclass -- it must read as corrupt, not crash or vanish.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("data")
+    (folder / naming.TOMBSTONE_NAME).write_bytes(b"\xff\xfe\x00\x01")
+
+    res = run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
+    assert res.exit_code == 2
+    assert naming.TOMBSTONE_NAME in res.stderr
+
+
+def test_write_tombstone_leaves_no_temp_file_behind(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding C6: the write is atomic -- a temp file in the same directory,
+    fsynced, then renamed over the real name -- so nothing half-written is
+    ever left for the next read to call corrupt.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("data")
+
+    assert run("push", "P1", "--remote", "nas:archive", "--path", archive).exit_code == 0
+    assert not list(folder.glob(".gwarchive-offload.tmp-*"))
+    assert tombstone.read_tombstone(folder) is not None
+
+
+def test_offload_refuses_a_single_empty_target(archive: Path, rclone: Callable[..., list[list[str]]]) -> None:
+    """Finding C6: offloading a folder with nothing to archive must refuse,
+    even as a dry run -- a dry run must not predict a success the real run
+    would also refuse.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+
+    res = run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
+    assert res.exit_code == 1
+    assert "holds no files" in res.stderr
+
+    res = run("offload", "P1", "--remote", "nas:archive", "--dry-run", "--path", archive)
+    assert res.exit_code == 1
+    assert "holds no files" in res.stderr
+
+
+def test_offload_skips_an_empty_folder_in_a_category_sweep(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding C6: a category sweep with one empty folder among several must
+    skip the empty one and still offload the rest, rather than dying outright.
+    """
+    calls = rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    run("create", "P", "Beta", "--path", archive)
+    (archive / "Project" / "P0001 Alpha" / "doc.txt").write_text("data")
+
+    res = run("offload", "P", "--remote", "nas:archive", "--yes", "--path", archive)
+    assert res.exit_code == 0
+    assert "Skipped" in res.stdout and "Beta" in res.stdout
+    assert tombstone.is_offloaded(archive / "Project" / "P0001 Alpha")
+    assert not tombstone.is_offloaded(archive / "Project" / "P0002 Beta")
+    assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Finding C5 + H1 -- offloaded-with-local-files, and restore --keep-local
+# ---------------------------------------------------------------------------
+
+
+def test_push_refuses_offloaded_folder_that_holds_local_files(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding C5: a folder pulled and then edited -- or left with leftovers by
+    an interrupted offload -- still carries ``offloaded_at``. push used to
+    call this "already on the remote" and skip it, which is false: the remote
+    does not have what is on disk. It must refuse instead.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("data")
+    tombstone.write_tombstone(
+        folder,
+        {
+            "prefix": "P0001",
+            "offloaded_at": "2026-01-01T00:00:00",
+            "remotes": ["nas:archive/Project/P0001 Alpha"],
+        },
+    )
+
+    res = run("push", "P1", "--remote", "nas:archive", "--path", archive)
+    assert res.exit_code == 1
+    assert "already on the remote" not in res.stderr
+    assert "local file" in res.stderr
+    assert "--keep-local" in res.stderr
+    assert (folder / "doc.txt").exists()
+
+
+def test_restore_keep_local_clears_status_without_fetching(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding C5+H1: --keep-local resolves an offloaded-with-local-files
+    folder by trusting what is already on disk, fetching nothing.
+    """
+    calls = rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("local edit\n")
+    tombstone.write_tombstone(
+        folder,
+        {
+            "prefix": "P0001",
+            "offloaded_at": "2026-01-01T00:00:00",
+            "remotes": ["nas:archive/Project/P0001 Alpha"],
+        },
+    )
+
+    res = run("restore", "P1", "--keep-local", "--path", archive)
+    assert res.exit_code == 0
+    assert not calls
+    assert not tombstone.is_offloaded(folder)
+    meta = tombstone.read_tombstone(folder)
+    assert meta is not None
+    assert "restored_at" in meta
+    assert (folder / "doc.txt").read_text() == "local edit\n"
+
+
+def test_restore_keep_local_refuses_when_not_offloaded(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding H1: a single named target that isn't offloaded has no status to
+    clear, so --keep-local must die rather than silently no-op.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    (archive / "Project" / "P0001 Alpha" / "doc.txt").write_text("data")
+
+    res = run("restore", "P1", "--keep-local", "--path", archive)
+    assert res.exit_code == 1
+    assert "not offloaded" in res.stderr
+
+
+def test_restore_keep_local_refuses_an_empty_folder(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding H1: --keep-local on an offloaded folder with no local files
+    would mark it restored with nothing there -- refuse instead.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    tombstone.write_tombstone(folder, {"prefix": "P0001", "offloaded_at": "2026-01-01T00:00:00"})
+
+    res = run("restore", "P1", "--keep-local", "--path", archive)
+    assert res.exit_code == 1
+    assert "holds no local files" in res.stderr
+
+
+def test_keep_local_refuses_what_looks_like_offload_leftovers(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding C5: fewer local files than were offloaded reads as the
+    leftovers of an interrupted offload. Marking those live would let the
+    next keep=1 push replace the complete archive with a partial one, so
+    --keep-local needs --yes there, and push's hint must not suggest it.
+    """
+    calls = rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("leftover")
+    tombstone.write_tombstone(
+        folder,
+        {
+            "prefix": "P0001",
+            "offloaded_at": "2026-01-01T00:00:00",
+            "file_count": 5,
+            "remotes": ["nas:archive/Project/P0001 Alpha"],
+        },
+    )
+
+    res = run("push", "P1", "--remote", "nas:archive", "--path", archive)
+    assert res.exit_code == 1
+    assert "--keep-local" not in res.stderr
+
+    res = run("restore", "P1", "--keep-local", "--path", archive)
+    assert res.exit_code == 1
+    assert "5 were offloaded" in res.stderr
+    assert tombstone.is_offloaded(folder)
+
+    res = run("restore", "P1", "--keep-local", "--yes", "--path", archive)
+    assert res.exit_code == 0
+    assert not tombstone.is_offloaded(folder)
+    assert not calls
+
+
+def test_keep_local_rejects_fetch_options(archive: Path, rclone: Callable[..., list[list[str]]]) -> None:
+    """Finding C5: --keep-local fetches nothing, so a --version or --remote
+    alongside it would be reported as success while doing nothing.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    res = run("restore", "P1", "--keep-local", "--version", "2", "--path", archive)
+    assert res.exit_code == 2
+
+
+def test_write_tombstone_keeps_a_readable_mode(archive: Path) -> None:
+    """Finding C6: the atomic write goes through mkstemp, which creates 0600.
+    The tombstone must keep the mode a plain write gave it, or a shared
+    archive's tombstones become unreadable to everyone else.
+    """
+    folder = archive / "Project"
+    tombstone.write_tombstone(folder, {"prefix": "P0001"})
+    assert (folder / naming.TOMBSTONE_NAME).stat().st_mode & 0o777 == 0o644
+    (folder / naming.TOMBSTONE_NAME).chmod(0o640)
+    tombstone.write_tombstone(folder, {"prefix": "P0001"})
+    assert (folder / naming.TOMBSTONE_NAME).stat().st_mode & 0o777 == 0o640
+
+
+def test_restore_prompts_once_for_a_whole_category_overwrite(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding C5+H1: one confirmation covers the whole batch, not one per
+    folder -- declining must not have let an earlier folder in the category
+    be overwritten first.
+    """
+    calls = rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    run("create", "P", "Beta", "--path", archive)
+    for name in ("P0001 Alpha", "P0002 Beta"):
+        folder = archive / "Project" / name
+        (folder / "doc.txt").write_text("local edit\n")
+        tombstone.write_tombstone(
+            folder,
+            {
+                "prefix": name[:5],
+                "offloaded_at": "2026-01-01T00:00:00",
+                "remotes": [f"nas:archive/Project/{name}"],
+            },
+        )
+
+    res = run("restore", "P", "--path", archive, input="n\n")
+    assert res.exit_code == 1
+    assert res.stdout.count("Proceed with restore?") <= 1
+    assert not calls
+
+
+def test_pull_under_json_without_yes_reports_would_overwrite_local(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding C5+H1: a dry run must say what it would clobber, in --json too."""
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("local edit\n")
+
+    res = run("pull", "P1", "--remote", "nas:archive", "--dry-run", "--json", "--path", archive)
+    assert res.exit_code == 0
+    data = json.loads(res.stdout)
+    assert data[0]["would_overwrite_local"] is True
+
+
+# ---------------------------------------------------------------------------
+# Finding H5 -- the local delete must skip reserved paths at any depth
+# ---------------------------------------------------------------------------
+
+
+def test_offload_delete_skips_reserved_paths_nested_in_subfolders(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding H5: the old delete loop only checked top-level children, so a
+    reserved name nested inside a real subfolder was swept away by
+    ``shutil.rmtree`` on its parent. The walk must be bottom-up and check
+    every path component, never ``rmtree`` a whole subtree at once.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    sub = folder / "sub"
+    sub.mkdir()
+    (sub / "doc.txt").write_text("data")
+    (sub / ".gwarchive-nested").write_text("must survive")
+
+    res = run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
+    assert res.exit_code == 0
+    assert not (sub / "doc.txt").exists()
+    assert (sub / ".gwarchive-nested").exists()
+
+
+# ---------------------------------------------------------------------------
+# Finding H6 -- only a file the snapshot still recognizes is deleted
+# ---------------------------------------------------------------------------
+
+
+def test_offload_keeps_back_a_file_changed_after_the_snapshot(
+    archive: Path,
+    tmp_path: Path,
+    rclone: Callable[..., list[list[str]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding H6: a file edited or created after the snapshot was taken (but
+    before the archive is uploaded) must not be deleted sight-unseen. It
+    stays local, and the run warns about it instead of silently losing it.
+    """
+    rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "doc.txt").write_text("data")
+
+    from gwarchive.commands import upload
+
+    real_snapshot = upload.snapshot_manifest
+
+    def spy_snapshot(target: Path) -> dict[str, tuple[int, int]]:
+        manifest = real_snapshot(target)
+        # Simulate a write landing after the snapshot but before delete.
+        (target / "late.txt").write_text("arrived after the snapshot\n")
+        return manifest
+
+    monkeypatch.setattr(upload, "snapshot_manifest", spy_snapshot)
+
+    res = run("offload", "P1", "--remote", "nas:archive", "--yes", "--no-compress", "--path", archive)
+    assert res.exit_code == 0
+    assert "changed or appeared" in res.stderr
+    assert (folder / "late.txt").read_text() == "arrived after the snapshot\n"
+
+
+# ---------------------------------------------------------------------------
+# Finding H7 -- keep_default falls back to the recorded keep, not just 1
+# ---------------------------------------------------------------------------
+
+
+def test_keep_falls_back_to_the_recorded_value_not_the_hardcoded_default(
+    archive: Path,
+    tmp_path: Path,
+    sample: Path,
+    rclone_local: list[list[str]],
+    stamps: Callable[[Sequence[str]], None],
+    gzip_codec: None,
+) -> None:
+    """Finding H7: a folder pushed once with --keep 3 must keep using 3 on a
+    later push that passes no --keep at all, not silently fall back to 1.
+    """
+    stamps(["20260101-000001", "20260101-000002", "20260101-000003"])
+    remote = tmp_path / "remote"
+    folder = sample
+
+    assert run("push", "P1", "--remote", remote, "--keep", 3, "--path", archive).exit_code == 0
+    (folder / "notes.txt").write_text("second push\n")
+    assert run("push", "P1", "--remote", remote, "--path", archive).exit_code == 0
+    (folder / "notes.txt").write_text("third push\n")
+    res = run("push", "P1", "--remote", remote, "--path", archive)
+    assert res.exit_code == 0
+    assert "Removed" not in res.stdout
+
+    meta = tombstone.read_tombstone(folder) or {}
+    assert len(meta["archive"]["versions"]) == 3  # type: ignore[index]
+    assert meta["archive"]["keep"] == 3  # type: ignore[index]
+
+
+def test_dry_run_keep_fallback_matches_the_real_run(
+    archive: Path,
+    tmp_path: Path,
+    sample: Path,
+    rclone_local: list[list[str]],
+    stamps: Callable[[Sequence[str]], None],
+    gzip_codec: None,
+) -> None:
+    """Finding H7: a dry run must use the same recorded-keep fallback the real
+    run would, or it predicts a prune count the real run would not make.
+    """
+    stamps(["20260101-000001", "20260101-000002", "20260101-000003"])
+    remote = tmp_path / "remote"
+    folder = sample
+
+    assert run("push", "P1", "--remote", remote, "--keep", 3, "--path", archive).exit_code == 0
+    (folder / "notes.txt").write_text("second push\n")
+    assert run("push", "P1", "--remote", remote, "--path", archive).exit_code == 0
+    (folder / "notes.txt").write_text("third push\n")
+
+    res = run("push", "P1", "--remote", remote, "--dry-run", "--path", archive)
+    assert res.exit_code == 0
+    assert "Would remove" not in res.stdout
+
+
+# ---------------------------------------------------------------------------
+# Finding H2 -- symlinks and special files cannot round-trip through the archive
+# ---------------------------------------------------------------------------
+
+
+def test_push_warns_but_proceeds_on_an_unsupported_member(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding H2: push does not delete local files, so a symlink it cannot
+    archive is a warning, not a refusal -- the original is still right there.
+    """
+    calls = rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "real.txt").write_text("data")
+    (folder / "link.txt").symlink_to(folder / "real.txt")
+
+    res = run("push", "P1", "--remote", "nas:archive", "--path", archive)
+    assert res.exit_code == 0
+    assert "won't round-trip" in res.stderr
+    assert "link.txt" in res.stderr
+    assert len(calls) == 1
+
+
+def test_offload_refuses_a_folder_with_an_unsupported_member(
+    archive: Path, rclone: Callable[..., list[list[str]]]
+) -> None:
+    """Finding H2: offload deletes the originals, so a symlink that cannot
+    round-trip through the archive must refuse before anything is staged or
+    deleted -- including under --dry-run, which must not predict a success
+    the real run would refuse.
+    """
+    calls = rclone()
+    run("create", "P", "Alpha", "--path", archive)
+    folder = archive / "Project" / "P0001 Alpha"
+    (folder / "real.txt").write_text("data")
+    (folder / "link.txt").symlink_to(folder / "real.txt")
+
+    res = run("offload", "P1", "--remote", "nas:archive", "--yes", "--path", archive)
+    assert res.exit_code == 1
+    assert "link.txt" in res.stderr
+    assert not calls
+    assert (folder / "link.txt").exists()
+
+    res = run("offload", "P1", "--remote", "nas:archive", "--dry-run", "--path", archive)
+    assert res.exit_code == 1
+    assert "link.txt" in res.stderr

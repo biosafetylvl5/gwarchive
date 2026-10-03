@@ -32,7 +32,7 @@ src/gwarchive/
 ```sh
 uv sync                    # installs the dev group
 uv run gwarchive --help
-uv run pytest              # 197 tests
+uv run pytest              # 272 tests
 uv run mypy
 uv run ruff check . && uv run ruff format --check .
 uv run vulture && uv run typos
@@ -105,6 +105,8 @@ with their seam dead. The failure is invisible exactly where you would look.
 - `--json` owns stdout: no spinner, no prompt, no trailing receipt.
 - `cd` uses a bare `print()` and a silent `sys.exit(1)`. Its stdout is consumed
   by `cd $(...)`, so a failed lookup must never emit something substitutable.
+  `here` keeps the same contract: shell-init's hook writes its stdout into an
+  OSC title sequence, which is also why it strips control characters.
 - Every mutating command takes `--dry-run`, and dry-run output has the same
   shape as real output — **except** `init`, `create` and `mksub`, which
   allocate by scanning and would be predicting rather than reserving.

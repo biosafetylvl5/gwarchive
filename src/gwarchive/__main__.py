@@ -16,7 +16,7 @@ if sys.version_info < (3, 11):  # noqa: UP036
         f"this interpreter is {sys.version_info[0]}.{sys.version_info[1]}"
     )
 
-from gwarchive import commands  # noqa: E402,F401  registers all 18 commands on `app`
+from gwarchive import commands  # noqa: E402,F401  registers all 19 commands on `app`
 from gwarchive.options import app  # noqa: E402
 
 
