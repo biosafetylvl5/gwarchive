@@ -12,6 +12,7 @@ what once made `mv P1 archive` rename a folder in place and report a green
 Layer 0: stdlib only. Nothing here may import another gwarchive module.
 """
 
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -95,6 +96,26 @@ def rename_preserving_prefix(name: str, new_descriptor: str) -> str:
         return f"{match.group(1)}-{match.group(2)}{match.group(3)}-{new_descriptor}"
     prefix = folder_prefix(name)
     return f"{prefix} {new_descriptor}" if prefix else new_descriptor
+
+
+def name_problem(text: str, *, path: bool = False) -> str | None:
+    """Why typed ``text`` cannot become part of a folder name, else None.
+
+    A descriptor is the rest of one path component, so a separator splits it:
+    ``create P "a/b"`` made ``P0001 a`` with a ``b`` inside. ``path=True`` is
+    for a literal destination, where separators are the point.
+
+    Control characters are refused everywhere, and not for looks. A newline
+    ends FOLDER_RE's ``.``, so ``P0003 x<LF>y`` stopped parsing as a folder,
+    allocation stopped seeing P0003, and the next create was handed P0003
+    again. ESC and BEL would replay into every listing and terminal title.
+    """
+    separators = frozenset(filter(None, ("/", os.sep, os.altsep)))
+    if not path and not separators.isdisjoint(text):
+        return "contains a path separator, which would split it into nested folders"
+    if any(unicodedata.category(ch) == "Cc" for ch in text):
+        return "contains a control character (a tab, newline or escape), which no folder name may hold"
+    return None
 
 
 def category_letter_for(destination: str) -> str | None:

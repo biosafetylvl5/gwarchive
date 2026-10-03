@@ -7,6 +7,7 @@ test_structure.py enforces that.
 
 from pathlib import Path
 
+import pytest
 from conftest import run, runner
 
 from gwarchive import options
@@ -80,3 +81,26 @@ def test_init_is_idempotent(archive: Path) -> None:
     result = run("init", "--path", archive)
     assert result.exit_code == 0
     assert "already initialized" in result.stdout
+
+
+@pytest.mark.parametrize("name", ["a/b", "x\ny", "tab\there", "e\x1b[31mred", "bell\x07"])
+def test_create_and_mksub_refuse_a_name_that_is_not_one_printable_component(archive: Path, name: str) -> None:
+    """A newline put a folder past FOLDER_RE, so allocation stopped seeing its
+    prefix and the next create reissued it; a slash made nested folders.
+    Refused with exit 2 before anything is allocated.
+    """
+    res = run("create", "P", name, "--path", archive)
+    assert res.exit_code == 2
+    assert "\x1b" not in res.stderr and "\x07" not in res.stderr
+    assert list((archive / "Project").iterdir()) == []
+
+    run("create", "P", "Alpha", "--path", archive)
+    res = run("mksub", "P1", name, "--path", archive)
+    assert res.exit_code == 2
+    assert list((archive / "Project" / "P0001 Alpha").iterdir()) == []
+
+
+def test_a_newline_name_can_no_longer_reissue_a_prefix(archive: Path) -> None:
+    run("create", "P", "x\ny", "--path", archive)
+    run("create", "P", "Real", "--path", archive)
+    assert [p.name for p in (archive / "Project").iterdir()] == ["P0001 Real"]

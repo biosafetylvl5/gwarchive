@@ -98,3 +98,22 @@ def test_parts_below_matches_by_inode_through_a_symlinked_base(tmp_path: Path) -
     assert paths.parts_below(real.resolve(), tmp_path / "link") == ()
     assert paths.parts_below(tmp_path.resolve(), real) is None
     assert paths.parts_below(inside, tmp_path / "missing") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "path", "problem"),
+    [
+        ("Plain name", False, None),
+        ("[draft] Ünïcödé 👨\u200d👩\u200d👧", False, None),
+        ("back\\slash", False, None),
+        ("a/b", False, "separator"),
+        ("./dir/P0001 x", True, None),
+        ("x\ny", False, "control"),
+        ("./x\x1b/y", True, "control"),
+        ("del\x7f", False, "control"),
+        ("c1\x9b", False, "control"),
+    ],
+)
+def test_name_problem(text: str, path: bool, problem: str | None) -> None:
+    found = naming.name_problem(text, path=path)
+    assert (found is None) if problem is None else (found is not None and problem in found)

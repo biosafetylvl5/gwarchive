@@ -497,3 +497,36 @@ def test_cp_into_a_lowercase_category_alias_does_not_duplicate_the_prefix(archiv
     prefixes = [naming.folder_prefix(p.name) for p in (archive / "Archive").iterdir()]
     assert prefixes == ["A0001"]
     assert naming.folder_prefix((archive / "Project" / "P0001 Alpha").name) == "P0001"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("rename", "P1", "x/y"),
+        ("rename", "P1", "q\x1b[31m"),
+        ("mv", "P1", "new\nname"),
+        ("mv", "P1", "Archive", "--rename", "x/y"),
+        ("mv", "P1", "./x\x07/P0001 z"),
+        ("cp", "P1", "Archive", "--rename", "r\tn"),
+        ("mv", "P1", "Archive", "--rename", "x/y", "--dry-run"),
+    ],
+)
+def test_relocation_refuses_a_typed_name_that_is_not_one_printable_component(
+    archive: Path, args: tuple[str, ...]
+) -> None:
+    """The same rule as create: `mv P1 Archive --rename x/y` made
+    `Archive/P0001 x/` and moved the folder in as a bare, prefixless `y`.
+    A dry run refuses it too, rather than predicting a success.
+    """
+    run("create", "P", "Alpha", "--path", archive)
+    res = run(*args, "--path", archive)
+    assert res.exit_code == 2
+    assert [p.name for p in (archive / "Project").iterdir()] == ["P0001 Alpha"]
+    assert list((archive / "Archive").iterdir()) == []
+
+
+def test_rename_still_takes_brackets_unicode_and_emoji(archive: Path) -> None:
+    run("create", "P", "Alpha", "--path", archive)
+    name = "[final] 東京 👨\u200d👩\u200d👧 – v2"
+    assert run("rename", "P1", name, "--path", archive).exit_code == 0
+    assert (archive / "Project" / f"P0001 {name}").is_dir()

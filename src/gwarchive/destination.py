@@ -24,6 +24,7 @@ from gwarchive.naming import (
     category_letter_for,
     folder_descriptor,
     folder_prefix,
+    name_problem,
     normalize_prefix,
     rename_preserving_prefix,
 )
@@ -102,6 +103,19 @@ def _category_letter_for_dir(literal: Path, base_path: Path) -> str | None:
     return None
 
 
+def check_name(text: str, *, path: bool = False) -> None:
+    """Refuse typed text that cannot become a folder name, with exit 2.
+
+    Every name a user types goes through here before anything is allocated
+    or created -- create, mksub, rename, and mv/cp's descriptor, --rename and
+    literal-path forms -- so a dry run refuses exactly what the real run does.
+    """
+    if problem := name_problem(text, path=path):
+        # repr, not the text itself: echoing it would send the very control
+        # character being refused straight to the terminal.
+        raise die(f"{text!r} {problem}.", code=2)
+
+
 def resolve_destination(
     source_path: Path,
     destination: str,
@@ -129,6 +143,7 @@ def resolve_destination(
             raise typer.Exit(1)
         target = dest_folder / source_path.name
     elif os.sep in destination or destination.startswith("~"):
+        check_name(destination, path=True)
         literal = _literal_destination(destination, base_path)
         letter = _category_letter_for_dir(literal, base_path)
         if letter is not None:
@@ -163,6 +178,7 @@ def resolve_destination(
                 f"{destination!r} is not a usable destination -- give a descriptor, category, or path.",
                 code=2,
             )
+        check_name(destination)
         # A copy is a new thing wherever it lands, so the descriptor form has to
         # honour fresh_number too. Without it `cp P1 "Alpha v2"` built a second
         # P0001 and then died blaming permanence -- refusing the most natural
@@ -173,6 +189,7 @@ def resolve_destination(
         target = source_path.parent / rename_preserving_prefix(name.strip(), destination)
 
     if rename:
+        check_name(rename)
         target = target.parent / rename_preserving_prefix(target.name, rename)
     return target
 

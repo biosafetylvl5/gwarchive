@@ -32,7 +32,7 @@ src/gwarchive/
 ```sh
 uv sync                    # installs the dev group
 uv run gwarchive --help
-uv run pytest              # 272 tests
+uv run pytest              # 295 tests
 uv run mypy
 uv run ruff check . && uv run ruff format --check .
 uv run vulture && uv run typos

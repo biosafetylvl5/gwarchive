@@ -9,6 +9,9 @@ import typer
 from rich.text import Text
 
 from gwarchive import output
+from gwarchive.destination import (
+    check_name,
+)
 from gwarchive.naming import (
     CATEGORIES,
     folder_prefix,
@@ -72,6 +75,7 @@ def create(
     base_path: BasePath,
 ) -> None:
     """Create a new numbered folder in one of the main categories."""
+    check_name(name)
     # Without this a typo'd --path silently grew a one-category archive
     # somewhere new, and the default is the user's real ~/gwarchive.
     require_archive(base_path)
@@ -94,6 +98,7 @@ def mksub(
     base_path: BasePath,
 ) -> None:
     """Create a numbered subfolder within an existing folder."""
+    check_name(name)
 
     parent_folder = resolve_prefix(parent, base_path)
     if not parent_folder:

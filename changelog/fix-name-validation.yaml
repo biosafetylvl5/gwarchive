@@ -1,0 +1,31 @@
+bug fix:
+  - title: "Folder names with a control character or a slash are refused"
+    description: |
+      `create`, `mksub`, `rename`, and `mv`/`cp` (new descriptor, `--rename`
+      or a literal path) accepted any text as a name. A newline was the
+      worst of it: the folder no longer parsed as `P0003 ...`, so prefix
+      allocation stopped seeing it and the next `create` was handed P0003 a
+      second time. A slash built nested folders -- `create P "a/b"` made
+      `P0001 a` with a `b` inside, and `mv P1 Archive --rename x/y` left the
+      folder as a bare, prefixless `y`. An escape character in a name was
+      replayed into every listing and terminal title.
+
+      These now exit 2 before anything is allocated or moved, dry runs
+      included, and the refusal shows the name escaped rather than echoing
+      the control character back. Unicode, emoji, brackets and backslashes
+      are unaffected.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - src/gwarchive/naming.py
+        - src/gwarchive/destination.py
+        - src/gwarchive/commands/structure.py
+        - src/gwarchive/commands/move.py
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null

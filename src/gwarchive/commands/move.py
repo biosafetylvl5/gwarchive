@@ -13,6 +13,7 @@ import typer
 
 from gwarchive import clock
 from gwarchive.destination import (
+    check_name,
     check_no_overwrite,
     check_not_nested,
     check_prefix_available,
@@ -121,6 +122,7 @@ def rename(
     base_path: BasePath,
 ) -> None:
     """Give a folder a new name, keeping its permanent prefix."""
+    check_name(name)
 
     folder = resolve_prefix(prefix, base_path)
     if not folder:
