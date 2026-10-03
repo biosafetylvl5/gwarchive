@@ -13,5 +13,5 @@ AGENTS.md; ``tests/test_structure.py`` enforces them.
 
 # Kept on one line with a plain literal: `cz bump` rewrites it by anchored
 # textual replace (see [tool.commitizen].version_files), and [project].version
-# in pyproject.toml is the authority it is synced against.
+# in pyproject.toml is the authority it is synced against. Never edit by hand.
 __version__ = "1.3.1"

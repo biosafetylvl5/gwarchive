@@ -239,10 +239,10 @@ def test_every_cited_finding_exists_in_the_record() -> None:
 def test_version_matches_package_metadata() -> None:
     """Prevents a half-finished `cz bump` from going unnoticed.
 
-    The version is declared twice -- [project].version and __init__.__version__
-    -- because commitizen's pep621 provider needs a static literal and
-    importlib.metadata raises PackageNotFoundError inside the zipapp. cz bump
-    writes both; nothing else checks they agree. The --version test cannot: it
+    This covers two of the version's three copies -- [project].version and
+    __init__.__version__ -- which exist because commitizen needs a static literal
+    and importlib.metadata raises PackageNotFoundError inside the zipapp. cz bump
+    writes them; nothing else checks they agree. The --version test cannot: it
     compares the output to the same source of truth it came from.
 
     It matters beyond cosmetics -- __version__ is stamped into every tombstone
@@ -257,6 +257,29 @@ def test_version_matches_package_metadata() -> None:
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert pyproject["project"]["version"] == gwarchive.__version__
+
+
+def test_the_lock_records_the_current_version() -> None:
+    """Prevents a hand bump that only CI's `uv sync --locked` would notice.
+
+    Locally `uv sync` relocks silently, so a stale lock surfaces only in CI.
+    Separate from the test above so a missing distribution cannot skip it.
+    """
+    lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    (entry,) = [p for p in lock["package"] if p["name"] == "gwarchive"]
+    assert entry["version"] == gwarchive.__version__, "run `uv lock`, or bump with `cz bump`"
+
+
+def test_setup_uv_is_pinned_to_a_tag_that_exists() -> None:
+    """Prevents a workflow that dies in "Set up job" before running anything.
+
+    setup-uv publishes no floating major tags from v8 on; only a full `vX.Y.Z`
+    tag or a commit SHA resolves.
+    """
+    for workflow in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        for ref in re.findall(r"astral-sh/setup-uv@(\S+)", workflow.read_text()):
+            major = re.fullmatch(r"v(\d+)", ref)
+            assert not (major and int(major.group(1)) >= 8), f"{workflow.name}: setup-uv@{ref}"
 
 
 def test_the_emitted_launcher_actually_runs(tmp_path: Path) -> None:

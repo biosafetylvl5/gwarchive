@@ -52,7 +52,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - uses: astral-sh/setup-uv@v10
+      # A full tag: setup-uv has published no floating `@vN` since v8.
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
 

@@ -26,15 +26,15 @@ build-backend = "hatchling.build"
 name = "gwarchive"
 # STATIC on purpose; do NOT convert to [tool.hatch.version]/`dynamic`.
 # Two reasons, both load-bearing:
-#   1. commitizen's `version_provider = "pep621"` reads [project].version.
+#   1. commitizen's `version_provider = "uv"` reads [project].version.
 #      Hatch dynamic versioning omits that key, so the two are mutually
 #      exclusive -- `cz bump` would have nothing to read.
 #   2. The reflex repair for a dynamic version
 #      (`__version__ = importlib.metadata.version("gwarchive")`) breaks inside
 #      the g.pyz zipapp, which carries no .dist-info to look up.
 # So: this key, plus a literal `__version__` in src/gwarchive/__init__.py,
-# kept in step by [tool.commitizen].version_files. That is two declarations,
-# not one, and test_version_matches_package_metadata is the guard.
+# plus gwarchive's entry in uv.lock -- three copies, all written by `cz bump`.
+# Never bump by hand: 1.3.0 broke the PyPI publish that way, 1.3.1 uv.lock.
 version = "1.3.1"
 description = "Organize folders under the GWArchive naming standard"
 readme = "README.md"
@@ -250,15 +250,16 @@ xfail_strict = true
 [tool.commitizen]
 name = "cz_conventional_commits"
 # Reads [project].version above -- see the note on the static version.
-version_provider = "pep621"
+# "uv", not "pep621": only "uv" also updates uv.lock, which `--locked` CI checks.
+version_provider = "uv"
 # An anchored textual replace, so `__version__ = "0.3.0"` must stay on one
 # line with no computation for this to find it.
 version_files = ["src/gwarchive/__init__.py:__version__"]
 # Decide this before the first tag: changing it later rewrites every tag.
 tag_format = "v$version"
 annotated_tag = true
-# At 0.x a BREAKING CHANGE bumps the minor: 0.3.0 -> 0.4.0, not 1.0.0.
-major_version_zero = true
+# commitizen applies this at any version: true made `feat!:` on 1.3.1 a 1.4.0.
+major_version_zero = false
 # Release notes come from brassy, not `cz changelog`, and no changelog_* keys
 # are set. This is explicit so nobody "fixes" it back on: the two answer
 # different questions, and here that matters concretely -- the git history is

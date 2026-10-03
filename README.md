@@ -4,22 +4,20 @@ A command-line tool for organizing folders under the GWArchive naming standard.
 
 Five categories, each a directory, each with a letter:
 
-| Letter | Directory   | For |
-|--------|-------------|-----|
-| `P`    | `Project`   | active work with an end |
-| `R`    | `Recurring` | work that comes back |
+| Letter | Directory   | For                             |
+| ------ | ----------- | ------------------------------- |
+| `P`    | `Project`   | active work with an end         |
+| `R`    | `Recurring` | work that comes back            |
 | `M`    | `Material`  | reference that is not a project |
-| `A`    | `Archive`   | finished, kept |
-| `O`    | `Old`       | retired, date-stamped |
+| `A`    | `Archive`   | finished, kept                  |
+| `O`    | `Old`       | retired, date-stamped           |
 
 Folders are named `P0001 Descriptor`, subfolders `P0001.01 Descriptor`, and
 retired folders `YYYY-MM-DD-P0001-Descriptor`.
 
-**A prefix is a permanent identifier.** It is allocated once, it is never
-reissued, and it travels with the folder across category moves — so a folder
-created in `Project` keeps its `P` prefix after it is moved into `Archive`. A
-*copy* is a new thing and gets a fresh identifier. There is no index or
-database; the filesystem is the source of truth.
+**A prefix is a permanent identifier**: allocated once, never reissued, and
+kept across category moves, so `P0001` stays `P0001` in `Archive`. A copy gets
+a fresh one. There is no index; the filesystem is the source of truth.
 
 ## Install
 
@@ -27,8 +25,7 @@ database; the filesystem is the source of truth.
 uv tool install gwarchive
 ```
 
-Or run a single self-contained artifact with no install at all — `g.pyz` vendors
-its dependencies:
+Or run `g.pyz`, a self-contained zipapp, with no install:
 
 ```bash
 ./g.pyz --help
@@ -47,8 +44,8 @@ gwarchive oldify P1                   # retire into Old/ with today's date
 gwarchive verify                      # audit the whole tree
 ```
 
-Every mutating command takes `--dry-run`, and dry-run output has the same shape
-as the real thing (`Would move` vs `Moved`).
+Every mutating command takes `--dry-run`, whose output matches the real run's
+(`Would move` vs `Moved`).
 
 ### Shell navigation
 
@@ -60,22 +57,22 @@ gwarchive here   # the folder you're in, short: P28:GWArchive
 
 `shell-init` also sets the terminal title from `here` at each prompt:
 
-| Where you are | Title |
-|---|---|
-| `Project/P0028 GWArchive/src/...` | `P28:GWArchive` |
+| Where you are                           | Title                                             |
+| --------------------------------------- | ------------------------------------------------- |
+| `Project/P0028 GWArchive/src/...`       | `P28:GWArchive`                                   |
 | `Project/P0028 GWArchive/P0028.01 Docs` | `P28:GWArchive` (`here --deepest`: `P28.01:Docs`) |
-| `Old/2026-01-05-P0001-Beta` | `Old:Beta` |
-| `Project/` | `G:Project` |
-| the archive root | `G:` |
-| anywhere else | the directory name |
+| `Old/2026-01-05-P0001-Beta`             | `Old:Beta`                                        |
+| `Project/`                              | `G:Project`                                       |
+| the archive root                        | `G:`                                              |
+| anywhere else                           | the directory name                                |
 
-It asks `here` only when the directory changes, and is skipped on
-`TERM=dumb`. Put the `eval` after a prompt framework that sets titles of its
-own (oh-my-zsh does), or pass `--no-title` to leave the title alone.
+It runs only when the directory changes, and not on `TERM=dumb`. Put the `eval`
+after any prompt framework that sets titles (oh-my-zsh does), or pass
+`--no-title`.
 
 ### Remote sync
 
-Backed by [rclone](https://rclone.org). Set `$GWARCHIVE_REMOTE` or pass
+Backed by [rclone](https://rclone.org); set `$GWARCHIVE_REMOTE` or pass
 `--remote`:
 
 ```bash
@@ -83,50 +80,44 @@ gwarchive push P1        # upload, keep the local copy
 gwarchive offload P1     # upload, delete locally, leave a tombstone
 gwarchive pull P1        # fetch back
 gwarchive restore P1     # fetch back and clear the tombstone
-gwarchive restore P1 --keep-local   # clear the tombstone, keeping what's on disk, fetching nothing
+gwarchive restore P1 --keep-local   # clear the tombstone, fetch nothing
 ```
 
-An offloaded folder keeps its name and prefix on disk while the bytes live on
-the remote. The tombstone it leaves — `.gwarchive-offload.json` — is also the
-version index; the tool never lists the remote to find out what is there.
+An offloaded folder keeps its name on disk while its bytes live on the remote.
+Its tombstone, `.gwarchive-offload.json`, is also the version index; the remote
+is never listed.
 
-A folder that still holds local files despite being marked offloaded — pulled
-and then edited, or left behind by an interrupted `offload` — is something
-`push` now refuses rather than skipping as "already on the remote". Use
-`restore --keep-local` to resolve it from what is already on disk, or `restore`
-to fetch the remote's copy over it.
+`push` refuses a folder marked offloaded that still holds local files (pulled
+then edited, or an interrupted `offload`). `restore --keep-local` resolves it
+from disk; `restore` fetches the remote's copy over it.
 
-`pull` and `restore` ask before overwriting local files the remote also has,
-with one prompt for the whole batch. Pass `-y`/`--yes` to skip it; `--json`
-without `--yes` refuses rather than prompting, since there is nothing to
-answer it with.
+`pull` and `restore` ask once before overwriting local files. `-y`/`--yes`
+skips the prompt; `--json` without `--yes` refuses instead.
 
-Folders are pushed as one compressed object (`tar.zst`, falling back to
-`tar.gz` when `zstd` is absent), written as a *sibling* of the mirror path. The
-extension is the codec's own on purpose: lose the tombstone entirely and
-`zstd -d < x.tar.zst | tar -tvf -` is still a complete recovery path.
+Each folder is pushed as one `tar.zst` (`tar.gz` without `zstd`) beside its
+mirror path. Even without the tombstone it is a plain archive:
+`zstd -d < x.tar.zst | tar -tvf -`.
 
 ## Exit codes
 
-| Code | Meaning |
-|------|---------|
-| `0`  | success |
+| Code | Meaning                                                                      |
+| ---- | ---------------------------------------------------------------------------- |
+| `0`  | success                                                                      |
 | `1`  | runtime failure — not found, ambiguous prefix, refused overwrite, no matches |
-| `2`  | invalid input — a bad category, a bad date, a malformed `--remote` |
+| `2`  | invalid input — a bad category, a bad date, a malformed `--remote`           |
 
-Errors go to stderr. `--json` owns stdout: no spinner, no prompt, no trailing
-receipt shares it.
+Errors go to stderr. Under `--json`, stdout carries only the JSON.
 
 ## Environment
 
-| Variable | Effect |
-|----------|--------|
-| `GWARCHIVE_BASE` | archive root (default `~/gwarchive`) |
-| `GWARCHIVE_REMOTE` | default rclone target |
-| `GWARCHIVE_CODEC` | force `zstd` or `gzip` |
-| `GWARCHIVE_COMPRESS` | default for `--no-compress` |
-| `GWARCHIVE_KEEP` | archived copies retained per remote |
-| `GWARCHIVE_POKEMON` | sprite for `clears` |
+| Variable             | Effect                               |
+| -------------------- | ------------------------------------ |
+| `GWARCHIVE_BASE`     | archive root (default `~/gwarchive`) |
+| `GWARCHIVE_REMOTE`   | default rclone target                |
+| `GWARCHIVE_CODEC`    | force `zstd` or `gzip`               |
+| `GWARCHIVE_COMPRESS` | default for `--no-compress`          |
+| `GWARCHIVE_KEEP`     | archived copies retained per remote  |
+| `GWARCHIVE_POKEMON`  | sprite for `clears`                  |
 
 ## Development
 
@@ -137,5 +128,8 @@ uv run mypy
 uv run ruff check . && uv run ruff format --check .
 ```
 
-Conventions, the module layering, and the rules that keep the test seams
-working are in [AGENTS.md](AGENTS.md).
+With Nix: `nix develop`, or `nix run github:biosafetylvl5/gwarchive -- --help`
+to try it. Commits follow
+[Conventional Commits](https://www.conventionalcommits.org/);
+`pre-commit install` adds the check. Contributor notes are in
+[AGENTS.md](AGENTS.md).

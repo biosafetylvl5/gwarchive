@@ -14,3 +14,7 @@ coverage.json
 build/
 dist/
 *.pyz
+
+# `nix build` output symlinks
+result
+result-*

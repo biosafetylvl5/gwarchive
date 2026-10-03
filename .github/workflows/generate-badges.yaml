@@ -25,12 +25,13 @@ jobs:
       - name: Check for new commits in last 24 hours
         id: check
         run: |
-          COMMITS=$(git log --oneline --since="25 hours ago" --no-merges | grep -v "\[skip ci\]" | wc -l)
+          # grep -c exits 1 on a zero count, which `bash -e` would treat as failure.
+          COMMITS=$(git log --oneline --since="25 hours ago" --no-merges | grep -vc "\[skip ci\]" || true)
           if [ "$COMMITS" -gt 0 ]; then
-            echo "has_new_commits=true" >> $GITHUB_OUTPUT
+            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
             echo "Found $COMMITS new commits in the last 25 hours"
           else
-            echo "has_new_commits=false" >> $GITHUB_OUTPUT
+            echo "has_new_commits=false" >> "$GITHUB_OUTPUT"
             echo "No new commits in the last 25 hours"
           fi
 
@@ -193,10 +194,8 @@ jobs:
         id: commitizen
         continue-on-error: true
         env:
-          # The merge that brought gwarchive into this repository. Everything
-          # before it is the template's history; the commit it replaced here,
-          # 9d83e69, was never in this repository, so the check could not pass.
-          COMMITIZEN_START_REV: "8e9c1f160f2d06454e8634b4d520fb8edb1ed9a6"
+          # Same value, and reason, as in ci-pipeline.yaml.
+          COMMITIZEN_START_REV: "0c8cfa03821675f87fa355d7b188c016281db4f3"
         run: cz check --rev-range ${{ env.COMMITIZEN_START_REV }}..HEAD
 
       - name: Generate commitizen badge
@@ -220,10 +219,10 @@ jobs:
         run: |
           git add .github/badges/*.svg
           if git diff --cached --quiet; then
-            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
             echo "No badge changes detected"
           else
-            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "Badge changes detected:"
             git diff --cached --name-status .github/badges/
           fi
@@ -238,15 +237,17 @@ jobs:
 
       - name: Generate summary
         run: |
-          echo "## Badge Generation Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Pytest & Coverage | ${{ steps.pytest.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Mypy | ${{ steps.mypy.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Ruff | ${{ steps.ruff.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Install | ${{ steps.install.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| CSpell | ${{ steps.cspell.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commitizen | ${{ steps.commitizen.outcome }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Badges committed: ${{ steps.badge_changes.outputs.has_changes }}" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Badge Generation Summary"
+            echo ""
+            echo "| Check | Status |"
+            echo "|-------|--------|"
+            echo "| Pytest & Coverage | ${{ steps.pytest.outcome }} |"
+            echo "| Mypy | ${{ steps.mypy.outcome }} |"
+            echo "| Ruff | ${{ steps.ruff.outcome }} |"
+            echo "| Install | ${{ steps.install.outcome }} |"
+            echo "| CSpell | ${{ steps.cspell.outcome }} |"
+            echo "| Commitizen | ${{ steps.commitizen.outcome }} |"
+            echo ""
+            echo "Badges committed: ${{ steps.badge_changes.outputs.has_changes }}"
+          } >> "$GITHUB_STEP_SUMMARY"

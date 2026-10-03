@@ -12,6 +12,7 @@
 # fragment file, where ChangeItem sets extra="forbid" and `desciption:` is a
 # hard error. Verified both directions: `fail_on_emptydir: false` and
 # `not_a_real_setting: 7` both parsed clean and did nothing.
+# cspell:ignore desciption
 
 # The first PR after a release empties changelog/. Without this brassy exits 1
 # on an empty directory and the release-notes check fails for an unrelated

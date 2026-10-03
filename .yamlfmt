@@ -1,0 +1,5 @@
+# By default yamlfmt deletes every blank line -- 132 in this repo, including
+# the ones separating each commented workflow step from the next.
+formatter:
+  type: basic
+  retain_line_breaks_single: true

@@ -14,10 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The merge that brought gwarchive into this repository; everything before it
-  # is the template's history. The previous value, 9d83e69, was a commit from
-  # the template's own repository and does not exist here.
-  COMMITIZEN_START_REV: "8e9c1f160f2d06454e8634b4d520fb8edb1ed9a6"
+  # The last commit before messages were enforced; older ones are already
+  # tagged and published. Keep in step with generate-badges.yaml.
+  COMMITIZEN_START_REV: "0c8cfa03821675f87fa355d7b188c016281db4f3"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -104,11 +103,13 @@ jobs:
         # have. `uv run` makes its own, and takes commitizen from the lock.
         run: uv run --no-default-groups --group release cz check --rev-range ${{ env.COMMITIZEN_START_REV }}..HEAD
 
+      # Via env, not a folded `run: >-`, which yamlfmt v0.19.0 mangles.
       - name: Commitizen (PR)
         if: (success() || failure()) && github.event_name == 'pull_request'
-        run: >-
-          uv run --no-default-groups --group release
-          cz check --rev-range ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: uv run --no-default-groups --group release cz check --rev-range "$BASE_SHA..$HEAD_SHA"
 
   # ---------------------------------------------------------------------------
   # Single matrix job — install once, then run pytest + docs + mypy
@@ -136,7 +137,7 @@ jobs:
       # in an extra. Unlike tests.yaml this install is NOT from uv.lock -- it
       # resolves fresh, the way a pip user's install would.
       - name: Install package with all extras
-        run: uv pip install -e .[doc,lint,test] mypy
+        run: uv pip install -e '.[doc,lint,test]' mypy
 
       - name: Run pytest
         run: python -m pytest

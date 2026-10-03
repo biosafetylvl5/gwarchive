@@ -1,5 +1,12 @@
 version: "0.2"
-ignorePaths: []
+# en-GB too: the prose spells behaviour, normalisation etc. the British way.
+language: en,en-GB
+# Generated or verbatim.
+ignorePaths:
+  - .github/badges/**
+  - uv.lock
+  - flake.lock
+  - LICENSE
 dictionaryDefinitions: []
 dictionaries: []
 words:
@@ -57,6 +64,95 @@ words:
   - viewcode
   - xarray
   - yday
+  # Project, stdlib and tooling vocabulary.
+  - actrc
+  - acttoolcache
+  - APFS
+  - arcname
+  - autouse
+  - biosafetylvl
+  - boolish
+  - bulbasaur
+  - capsys
+  - catthehacker
+  - cntrl
+  - colonless
+  - compileall
+  - conftest
+  - copybutton
+  - copyto
+  - copytree
+  - cpython
+  - creativecommons
+  - delenv
+  - deletefile
+  - dests
+  - difflib
+  - eevee
+  - emptydir
+  - ENOSPC
+  - esac
+  - evals
+  - fchmod
+  - fifos
+  - fileset
+  - fnmatch
+  - followlinks
+  - greppable
+  - gwarchive
+  - hardlinks
+  - inspectable
+  - iterdir
+  - lockfiles
+  - manylinux
+  - metavar
+  - mksub
+  - mktemp
+  - monkeypatch
+  - monkeypatchable
+  - monkeypatched
+  - mstr
+  - mtimes
+  - nektos
+  - nixfmt
+  - nixos
+  - nixpkgs
+  - oldify
+  - pasteable
+  - pipefail
+  - pipx
+  - pkgs
+  - pname
+  - pokeget
+  - prefixless
+  - PRMAO
+  - pycache
+  - pygit
+  - pypa
+  - pypi
+  - pyproject
+  - Renderable
+  - reqs
+  - rmtree
+  - scriptability
+  - sdist
+  - shutil
+  - snorlax
+  - stdlib
+  - strerror
+  - subnumber
+  - surrogateescape
+  - timespec
+  - topdown
+  - unconstructible
+  - unexpandable
+  - unpipeable
+  - unraid
+  - unuploaded
+  - xfail
+  - zipapp
+  - zipimport
+  - zstd
 ignoreWords:
   - norecursedirs
   - venv
@@ -73,4 +169,16 @@ ignoreWords:
   - sphinxcontrib
   - testpaths
   - xdist
+  # Deliberately wrong: test fixtures and quoted evidence. `Alph` keeps its
+  # case because typos reads this file too and allows only that spelling.
+  - Alph
+  - arkive
+  - caseprobe
+  - caseprobedir
+  - keepme
+  - mred
+  - nosuchuser
+  - sstx
+  - udcff
+  - Ünïcödé
 import: []

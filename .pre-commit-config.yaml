@@ -1,15 +1,13 @@
 default_install_hook_types: [pre-commit, commit-msg]
 
-# Two hooks are deliberately absent.
+# `trailing-whitespace` is deliberately absent: accepted-plan.md quotes
+# captured terminal output whose trailing spaces are the evidence for findings
+# 1.2 and 1.3.
 #
-# `trailing-whitespace`: accepted-plan.md quotes captured terminal output whose
-# trailing spaces are the evidence for findings 1.2 and 1.3.
-#
-# `mdformat`: measured against the plan documents, it rewrites `---` rules to
-# `______`, pads every table, renumbers ordered lists to all-`1.` (the plans
-# cite their own step numbers in prose), and unwraps paragraphs. `--number
-# --wrap keep` stops only the renumbering. accepted-plan.md is the user's
-# annotated record; a formatter must not rewrite it on commit.
+# docs/history/ is excluded from the Markdown formatters. accepted-plan.md is
+# the user's annotated record: mdformat renumbers the step lists its prose cites
+# and unwraps its paragraphs, and blacken-docs reformats the old code it quotes
+# as evidence. CHANGELOG.md is excluded too, because brassy regenerates it.
 #
 # The ruff pin below moved v0.15.6 -> v0.16.8. That crosses a threshold: ruff
 # 0.16.0 promoted Markdown formatting out of preview, so from this rev onward
@@ -39,12 +37,14 @@ repos:
     rev: "1.20.0"
     hooks:
       - id: blacken-docs
+        exclude: ^docs/history/
         additional_dependencies:
           - black==26.3.0
   - repo: https://github.com/executablebooks/mdformat
     rev: "1.0.0"
     hooks:
       - id: mdformat
+        exclude: ^(docs/history/|CHANGELOG\.md$)
         additional_dependencies:
           - mdformat-gfm
           - mdformat-black
@@ -66,3 +66,8 @@ repos:
     rev: v9.7.0
     hooks:
       - id: cspell
+  # The commit-msg stage above. Keep rev in step with commitizen in uv.lock.
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.18.1
+    hooks:
+      - id: commitizen

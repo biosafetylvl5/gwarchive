@@ -107,7 +107,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: astral-sh/setup-uv@v10
+      # A full tag: setup-uv has published no floating `@vN` since v8.
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
 
@@ -162,7 +163,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0
         # No cache: a cached resolve is the one thing this job must not reuse.
 
       - name: Re-resolve every dependency at its newest version
