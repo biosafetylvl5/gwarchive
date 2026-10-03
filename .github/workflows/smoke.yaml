@@ -11,6 +11,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # Before the first `uv` call, not after it: the runner image is not
+      # promised to ship uv, and under act's image it does not.
+      - uses: astral-sh/setup-uv@v5
       - run: uv sync --locked
       - name: Help renders
         run: uv run gwarchive --help
@@ -23,7 +26,6 @@ jobs:
       # inside this job's environment therefore proves nothing; it would borrow
       # typer and rich from site-packages. Run it under `uv run --no-project`
       # or a bare interpreter, or do not bother running it.
-      - uses: astral-sh/setup-uv@v5
       # --path on every line is load-bearing, not decoration: without it these
       # commands write to the runner's ~/gwarchive, and the same habit is what
       # keeps a stray local run away from a real archive.

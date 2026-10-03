@@ -30,11 +30,9 @@ jobs:
     name: ${{ matrix.tool }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # vulture is the only soft leg. Until the split lands, the command bodies
-    # still live in g.py while the package grows around them, so its finding set
-    # churns commit to commit -- and a detector that is red for fifteen commits
-    # teaches people to ignore red. Remove this once the extraction is complete.
-    continue-on-error: ${{ matrix.tool == 'vulture' }}
+    # No soft legs. vulture ran with continue-on-error while the split was in
+    # flight and its finding set churned commit to commit; g.py is gone, the run
+    # is clean, and a dead helper should now fail the build like anything else.
     strategy:
       fail-fast: false
       matrix:

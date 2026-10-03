@@ -14,7 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  COMMITIZEN_START_REV: "9d83e6984277ccbe6c5f6713f65b75a90e7c7e40"
+  # The merge that brought gwarchive into this repository; everything before it
+  # is the template's history. The previous value, 9d83e69, was a commit from
+  # the template's own repository and does not exist here.
+  COMMITIZEN_START_REV: "8e9c1f160f2d06454e8634b4d520fb8edb1ed9a6"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -42,7 +45,13 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
+      - name: check-toml
+        uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: check-toml --all-files
+
       - name: Ruff (lint)
+        if: success() || failure()
         uses: pre-commit/action@v3.0.1
         with:
           extra_args: ruff-check --all-files
@@ -91,14 +100,14 @@ jobs:
 
       - name: Commitizen (push)
         if: (success() || failure()) && github.event_name == 'push'
-        run: |
-          uv pip install commitizen
-          cz check --rev-range ${{ env.COMMITIZEN_START_REV }}..HEAD
+        # `uv pip install` needs an activated venv, which this job does not
+        # have. `uv run` makes its own, and takes commitizen from the lock.
+        run: uv run --no-default-groups --group release cz check --rev-range ${{ env.COMMITIZEN_START_REV }}..HEAD
 
       - name: Commitizen (PR)
         if: (success() || failure()) && github.event_name == 'pull_request'
-        run: |
-          uv pip install commitizen
+        run: >-
+          uv run --no-default-groups --group release
           cz check --rev-range ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
 
   # ---------------------------------------------------------------------------
@@ -113,29 +122,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # activate-environment: setup-uv v6 no longer creates and activates a venv
+      # just because python-version is set, and `uv pip install` refuses to run
+      # without one. It also puts .venv/bin on PATH for the bare `python` and
+      # `mypy` below.
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
+          activate-environment: true
 
+      # The extras are declared in [project.optional-dependencies]. mypy is
+      # named separately because it lives in the `types` dependency group, not
+      # in an extra. Unlike tests.yaml this install is NOT from uv.lock -- it
+      # resolves fresh, the way a pip user's install would.
       - name: Install package with all extras
-        run: uv pip install -e .[doc,lint,test] pytest mypy
+        run: uv pip install -e .[doc,lint,test] mypy
 
       - name: Run pytest
         run: python -m pytest
 
+      # Skipped, not failed, while the repository has no sphinx/ tree. The
+      # template's placeholder site was removed; this step picks up again as
+      # soon as a sphinx/conf.py exists.
       - name: Build docs
-        if: success() || failure()
+        if: (success() || failure()) && hashFiles('sphinx/conf.py') != ''
         run: |
           cd sphinx
           make html
 
       - name: Run mypy
         if: (success() || failure()) && matrix.python-version == '3.13'
-        run: mypy ./src
+        # No path argument: [tool.mypy].files covers src, tests and scripts.
+        run: mypy
 
       - name: Upload documentation artifact
         uses: actions/upload-artifact@v4
-        if: always() && matrix.python-version == '3.13'
+        if: always() && matrix.python-version == '3.13' && hashFiles('sphinx/conf.py') != ''
         with:
           name: sphinx-docs
           path: sphinx/_build/html/

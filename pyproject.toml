@@ -67,7 +67,8 @@ classifiers = ["Private :: Do Not Upload"]
 #             click>=8.2 with
 #             TypeError: Parameter.make_metavar() missing 1 required
 #             positional argument: 'ctx'. 0.16.0 removed the cap.
-# Verified 191/191 green at 0.16.0, 0.17.4, 0.19.2, 0.21.1 and 0.27.2.
+# Verified green at 0.16.0, 0.17.4, 0.19.2, 0.21.1 and 0.27.2, against the
+# suite as it stood then (191 tests). Re-measure before relying on it again.
 #
 # rich is an unconditional dependency of typer from 0.12 onward (the old
 # `typer[all]` extra is gone), so this line is never what makes rich present.
@@ -92,13 +93,25 @@ dependencies = [
 gwarchive = "gwarchive.__main__:main"
 
 # ---------------------------------------------------------------------------
-# Dependency groups (PEP 735), not extras. Extras are *published* -- they are a
-# feature of the distribution someone installs. Development tooling is not.
-# The split keeps `release` (brassy pulls pydantic, pygit2 and dateparser) out
-# of the three-Python test matrix, where it would triple install time to
-# support a job that does not run there.
+# Extras AND dependency groups, with each list written exactly once.
+#
+# The extras exist for pip-shaped installs -- ci-pipeline.yaml runs
+# `uv pip install -e .[doc,lint,test]`, which cannot see a dependency group.
+# The groups exist for uv: `uv sync --group test` is what tests.yaml and
+# static.yaml install from the lock. Extras are published metadata, which would
+# normally argue against putting tooling in them, but the "Do Not Upload"
+# classifier above means nothing is published.
+#
+# The lists live in the extras and the groups name them (`gwarchive[test]`).
+# uv resolves that self-reference to the project, so there is one copy to edit
+# and the two spellings cannot drift. Do not copy the lists into the groups.
+#
+# The group split keeps `release` (brassy pulls pydantic, pygit2 and
+# dateparser) out of the four-leg test matrix, where it would multiply install
+# time to support a job that does not run there. `doc` is in no group, `dev`
+# included: sphinx is not something every `uv sync` should install.
 # ---------------------------------------------------------------------------
-[dependency-groups]
+[project.optional-dependencies]
 test = [
     "pytest",
     "pytest-cov",
@@ -116,6 +129,18 @@ lint = [
     "vulture",
     "typos",
 ]
+# What ci-pipeline.yaml's docs build needs: Sphinx plus the extensions and
+# theme a conf.py for this project would name.
+doc = [
+    "sphinx",
+    "myst-parser",
+    "sphinx-rtd-theme",
+    "sphinx-copybutton",
+]
+
+[dependency-groups]
+test = ["gwarchive[test]"]
+lint = ["gwarchive[lint]"]
 types = [
     "mypy",
     # [tool.mypy].files includes "tests", and the test modules import pytest
@@ -164,139 +189,10 @@ include = [
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
->>>>>>> c664cdf (build: package gwarchive with hatchling and uv)
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
-<<<<<<< HEAD
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-strict_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-
-[[tool.mypy.overrides]]
-module = "tests.*"
-disallow_untyped_defs = false
-follow_untyped_imports = true
-
-[tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
-python_files = "test_*.py"
-norecursedirs = ["xarray_utils"]
-addopts = "-v -rf --ff --cov=src --cov-report=term-missing --cov-report=xml -m \"not limited_test_dataset_availability\""
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: CONCURRENT - marks tests as integration (select with '-m \"integration\"')",
-    "spans_multiple_packages: CONCURRENT - marks integration tests that test functionality that could fail due to errors in multiple repositories. e.g. listing or validating all plugins, etc. Allows calling tests to ensure the same error will not cause tests in multiple repos to fail.",
-    "limited_test_dataset_availability: CONCURRENT - marks integration tests that may have limited test dataset availability so may not be available to all users.",
-    "base: OPTIONAL INDEPENDENT - integration tests that complete very quickly and require only a minimal installation for testing basic functionality within the current repository",
-    "full: REQUIRED INDEPENDENT - integration tests that require a 'full' installation for testing all functionality within the current repository. 'full' marker includes all tests for the current repo except for tests included in the optional 'base' marker.",
-]
-
-[tool.coverage.run]
-source = ["src"]
-omit = ["tests/*"]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-    "pass",
-    "raise ImportError",
-]
-
-[tool.bandit]
-exclude_dirs = ["tests", "docs"]
-skips = ["B101"]  # Skip assert warnings
-
-[tool.ruff]
-# Target Python version
-target-version = "py312"
-line-length = 88
-exclude = [
-    "tests",
-    "src/legacy",
-]
-
-[tool.ruff.lint]
-# Enable rules
-select = [
-    "E", "F", "W",  # pycodestyle and Pyflakes
-    "I",            # isort
-    "N",            # PEP8 naming
-    "D",            # pydocstyle
-    "UP",           # pyupgrade
-    "B",            # flake8-bugbear
-    "C4",           # flake8-comprehensions
-    "SIM",          # flake8-simplify
-    "ARG",          # flake8-unused-arguments
-    "ERA",          # eradicate
-    "PL",           # Pylint
-    "RUF",          # Ruff-specific rules
-    "TCH",          # flake8-type-checking
-    "S",            # flake8-bandit (security)
-    "A",            # flake8-builtins
-    "COM",          # flake8-commas
-    "PT",           # flake8-pytest-style
-    "PTH",          # flake8-use-pathlib
-    "TRY",          # tryceratops (exception handling)
-]
-
-ignore = [
-    "D203",  # one-blank-line-before-class (conflicts with D211)
-    "D212",  # multi-line-summary-first-line (conflicts with D213)
-    "E731",  # allow variable assigned lambdas (PLEASE!! I need my lambdas!)
-]
-
-# Allow fix for all enabled rules (when `--fix`) is provided.
-fixable = ["ALL"]
-unfixable = []
-
-# Allow unused variables when underscore-prefixed.
-dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
-
-[tool.ruff.lint.pydocstyle]
-convention = "numpy"
-
-[tool.ruff.lint.mccabe]
-max-complexity = 5
-
-[tool.ruff.lint.flake8-tidy-imports]
-ban-relative-imports = "all"
-
-[tool.ruff.lint.per-file-ignores]
-# Allow assert statements in tests
-"tests/**/*" = ["S101"]
-# Ignore import violations in __init__.py files
-"__init__.py" = ["F401"]
-
-[tool.ruff.format]
-# Like Black, use double quotes for strings.
-quote-style = "double"
-# Like Black, indent with spaces, rather than tabs.
-indent-style = "space"
-# Like Black, respect magic trailing commas.
-skip-magic-trailing-comma = false
-# Unlike Black, force unix style line endings ("\n")
-line-ending = "lf"
-
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.commitizen]
-name = "cz_conventional_commits"
-tag_format = "v$version"
-version_provider = "poetry"
-=======
 no_implicit_optional = true
 warn_unreachable = true
 
@@ -320,10 +216,6 @@ warn_unused_ignores = true
 # tests/ in that same commit. Setting it while tests/ does not yet exist
 # collects zero tests and makes the per-commit gate vacuous.
 testpaths = ["tests"]
-# --import-mode=importlib: the split gives tests/ nested directories with
-# duplicate basenames (tests/commands/test_stats.py beside tests/test_stats.py
-# would collide under the default prepend mode, which needs globally unique
-# basenames).
 # --strict-markers, --strict-config: a typo in a marker or in this table is an
 # error, not a silent no-op.
 addopts = "--strict-markers --strict-config"
@@ -373,9 +265,9 @@ update_changelog_on_bump = false
 #
 # Be honest about what 60 buys today: 22 findings, 22 false positives, zero
 # genuinely dead functions. Its value is prospective -- it is the only tool in
-# the stack that will catch a helper stranded by the split itself. Run it with
-# continue-on-error until the last extraction lands; a detector that is red for
-# fifteen commits teaches people to ignore red.
+# the stack that will catch a stranded helper. It ran with continue-on-error
+# while the split was in flight; the split is done and static.yaml now runs it
+# as a hard leg.
 #
 # vulture reads this table from the CURRENT WORKING DIRECTORY only -- it does
 # not walk up the tree. Run from one directory below and the config is ignored
@@ -455,4 +347,3 @@ Alph = "Alph"
 # [tool.typos.files]
 # extend-exclude = [".git/"]
 # ignore-hidden = false
->>>>>>> c664cdf (build: package gwarchive with hatchling and uv)

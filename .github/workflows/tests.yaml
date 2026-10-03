@@ -82,7 +82,7 @@ jobs:
       matrix:
         # '3.11.0' is not a typo and not redundant with '3.11'.
         #
-        # AGENTS.md:441-447: extraction vets every member itself rather than
+        # AGENTS.md, "Remote sync": extraction vets every member itself rather than
         # trusting tarfile's `filter="data"`, because that landed in 3.12 and
         # was backported only as far as 3.11.4, while the floor admits 3.11.0 --
         # "so the vulnerable range is exactly the range nothing exercises".
@@ -121,7 +121,7 @@ jobs:
       # default groups, 12 with `--no-default-groups --group test`, the
       # difference being ruff, typos and vulture. On the real tree the release
       # group additionally drags in brassy's pydantic/pygit2/dateparser, which
-      # the plan explicitly wants kept out of the 3-leg matrix.
+      # the plan explicitly wants kept out of the test matrix.
       - name: Install from the lock
         run: uv sync --locked --no-default-groups --group test
 

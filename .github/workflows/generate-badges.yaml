@@ -44,14 +44,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # activate-environment puts .venv/bin on PATH, so the bare `pytest`,
+      # `mypy`, `ruff`, `cz` and `python` below all resolve to the synced tools.
+      # setup-uv v6 no longer activates a venv merely because python-version is
+      # set, and without one `uv pip install` refuses to run.
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.13"
+          activate-environment: true
 
+      # The tools come from uv.lock (the default `dev` group carries all of
+      # them), so a badge reports on the same versions the gate runs. genbadge
+      # is the only badge-specific dependency and is not worth a lock entry.
       - name: Install dependencies
         run: |
-          uv pip install -e .[doc,lint,test]
-          uv pip install pytest mypy ruff commitizen coverage genbadge[all]
+          uv sync --locked
+          uv pip install 'genbadge[all]'
 
       - name: Create directories
         run: |
@@ -61,7 +69,10 @@ jobs:
       - name: Run pytest with coverage
         id: pytest
         continue-on-error: true
-        run: coverage run -m pytest --junitxml=reports/junit.xml
+        # --cov-report=xml writes the coverage.xml the coverage badge reads.
+        # A bare `coverage run` never produced one, so that badge was always
+        # "error".
+        run: pytest --cov=gwarchive --cov-report=xml --junitxml=reports/junit.xml
 
       - name: Generate pytest badge
         run: |
@@ -90,7 +101,9 @@ jobs:
       - name: Run mypy
         id: mypy
         continue-on-error: true
-        run: mypy ./src --junit-xml reports/mypy.xml || true
+        # No path argument: [tool.mypy].files covers src, tests and scripts, and
+        # the badge should mean what the gate means.
+        run: mypy --junit-xml reports/mypy.xml || true
 
       - name: Generate mypy badge
         run: |
@@ -107,7 +120,8 @@ jobs:
       - name: Run ruff
         id: ruff
         continue-on-error: true
-        run: ruff check ./src --output-format=junit -o reports/ruff.xml || true
+        # ".", not ./src: the gate lints tests/ and scripts/ too.
+        run: ruff check . --output-format=junit -o reports/ruff.xml || true
 
       - name: Generate ruff badge
         run: |
@@ -179,7 +193,10 @@ jobs:
         id: commitizen
         continue-on-error: true
         env:
-          COMMITIZEN_START_REV: "9d83e6984277ccbe6c5f6713f65b75a90e7c7e40"
+          # The merge that brought gwarchive into this repository. Everything
+          # before it is the template's history; the commit it replaced here,
+          # 9d83e69, was never in this repository, so the check could not pass.
+          COMMITIZEN_START_REV: "8e9c1f160f2d06454e8634b4d520fb8edb1ed9a6"
         run: cz check --rev-range ${{ env.COMMITIZEN_START_REV }}..HEAD
 
       - name: Generate commitizen badge

@@ -19,6 +19,12 @@ default_install_hook_types: [pre-commit, commit-msg]
 # Optional[str] signature inside accepted-plan.md -- old code held as evidence.
 # That exclude is load-bearing at this rev, not decoration. Do not remove it.
 repos:
+  # check-toml would have refused the commit that left merge-conflict markers
+  # in pyproject.toml, which then broke every tool in the gate unnoticed.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-toml
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.8
     hooks:
