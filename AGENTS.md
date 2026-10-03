@@ -39,6 +39,14 @@ That block is the gate; keep it green at every commit. `nix develop` provides
 the same environment on the 3.11 floor (`.#py312`, `.#py313` for the other CI
 legs), and `nix build` builds and tests the package.
 
+The flake builds from an allowlist (`lib.fileset.unions` in `flake.nix`), not
+the whole tree, because the repo root holds a private `.gwarchive-offload.json`.
+Keep it in step with the tree: a test that reads a new repo file needs that file
+listed, and a listed path that no longer exists fails evaluation outright, so
+`nix run github:biosafetylvl5/gwarchive` breaks. Deleting `docs/` did exactly
+that. No CI job runs nix, so run `nix build` after adding, moving or deleting
+anything at the top level.
+
 ## The two rules
 
 Both are enforced by `tests/test_structure.py`; read its docstrings before

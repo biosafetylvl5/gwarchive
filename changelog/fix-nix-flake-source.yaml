@@ -1,0 +1,20 @@
+bug fix:
+  - title: "`nix run github:biosafetylvl5/gwarchive` evaluates again"
+    description: |
+      The flake's source allowlist still named `docs/` after that directory
+      was removed, and `lib.fileset.unions` refuses a path that does not
+      exist, so `nix run`, `nix build` and `nix flake check` failed during
+      evaluation before building anything. The stale entry is gone.
+    files:
+      added: []
+      deleted: []
+      modified:
+        - flake.nix
+        - AGENTS.md
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null

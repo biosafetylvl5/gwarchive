@@ -20,13 +20,12 @@
 
       # An allowlist, like the sdist's: the repo root holds a private
       # .gwarchive-offload.json that must not reach the world-readable store.
-      # test_structure.py reads .github/workflows and docs/.
+      # test_structure.py reads .github/workflows.
       src = lib.fileset.toSource {
         root = ./.;
         fileset = lib.fileset.unions [
           ./src
           ./tests
-          ./docs
           ./.github/workflows
           ./pyproject.toml
           ./uv.lock
