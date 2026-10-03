@@ -110,4 +110,4 @@ jobs:
           # Hints must name the artifact the user actually has. There is no
           # `gwarchive` on PATH here -- that is the whole premise of a .pyz.
           GWARCHIVE_BASE="$tmp" uv run --no-project -- python dist/g.pyz list R 2>&1 \
-            | grep -q "python g.pyz init"
+            | grep -q 'python g.pyz create R'
