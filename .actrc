@@ -1,0 +1,22 @@
+# ruff-action and setup-python need node and curl; the micro image has neither.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# This is an Apple-silicon machine. actions/setup-python's arm64 Linux coverage
+# is thinner than amd64, so a 3.11 or 3.13 matrix leg can fail to find a build.
+# Forcing amd64 costs emulation time and buys reproducibility with the real
+# ubuntu-latest runners.
+--container-architecture linux/amd64
+
+# Works around nektos/act#107. When a step writes to $GITHUB_PATH -- which
+# actions/setup-python does -- act rebuilds PATH from its own hardcoded Debian
+# default instead of the image's, dropping /opt/acttoolcache/node/*/x64/bin.
+# Every JS action's *post* step then dies with `"node": executable file not
+# found in $PATH`, after all the real steps have already passed. Setting PATH
+# explicitly gives act a base that still contains node.
+#
+# The node versions are pinned because .actrc cannot glob. If the runner image
+# bumps them this silently regresses to the same failure; regenerate with:
+#
+#   docker run --rm --platform linux/amd64 catthehacker/ubuntu:act-latest \
+#     bash -c 'ls -d /opt/acttoolcache/node/*/x64/bin | paste -sd: -; echo "$PATH"'
+--env PATH=/opt/acttoolcache/node/24.19.0/x64/bin:/opt/acttoolcache/node/20.20.2/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin

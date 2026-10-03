@@ -1,0 +1,91 @@
+name: Smoke
+on:
+  push:
+    branches: 'main'
+  pull_request:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    # offload and `verify --quarantine` both prompt. A leg that forgets --yes
+    # would otherwise hang to the six-hour default.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install --upgrade pip typer rich
+      - name: Help renders
+        run: python3 g.py --help
+      # The wget-install path: uv reads the PEP 723 inline metadata at the top
+      # of g.py and builds the environment itself. The pip install above has
+      # already run, so what makes this honest is uv's *isolation* from system
+      # site-packages, not the absence of a prior install.
+      - uses: astral-sh/setup-uv@v5
+      - name: uv run g.py --help (no pre-install)
+        run: uv run --no-project g.py --help
+      # --path on every line is load-bearing, not decoration: without it these
+      # commands write to the runner's ~/gwarchive, and the same habit is what
+      # keeps a stray local run away from a real archive.
+      #
+      # Never add a `g.py verify --fix`-style step against the checkout itself.
+      # --quarantine relocates unrecognized root entries into BACKUP/, which
+      # against this repo would mean .github/, test_g.py and g.py.
+      - name: Round trip against a scratch archive
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          python3 g.py init --path "$tmp"
+          python3 g.py create P "Test Project" --path "$tmp"
+          python3 g.py mksub P1 "Notes" --path "$tmp"
+          python3 g.py list P --path "$tmp"
+          python3 g.py verify --path "$tmp"
+          test -d "$tmp/Project/P0001 Test Project/P0001.01 Notes"
+      - name: Prefixes survive a category move
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          python3 g.py init --path "$tmp"
+          python3 g.py create P "Alpha" --path "$tmp"
+          python3 g.py create A "Existing" --path "$tmp"
+          python3 g.py mv P1 Archive --path "$tmp"
+          test -d "$tmp/Archive/P0001 Alpha"
+          test -d "$tmp/Archive/A0001 Existing"
+          test "$(python3 g.py cd P1 --path "$tmp")" = "$tmp/Archive/P0001 Alpha"
+      # rclone is not installed on the runner, so this leg can only go as far
+      # as --dry-run. The real round trip is covered in test_g.py, where the
+      # rclone_local fixture stands in for rclone and the gzip_codec fixture
+      # runs the archive path in pure stdlib across the 3.11/3.12/3.13 matrix.
+      #
+      # Asserted through --json, not by grepping the human line: a caption is
+      # allowed to be reworded, and this leg used to fail when one was.
+      - name: Compressed transfer plans a single object
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          export GWARCHIVE_CODEC=gzip
+          python3 g.py init --path "$tmp"
+          python3 g.py create P "Alpha" --path "$tmp"
+          echo body > "$tmp/Project/P0001 Alpha/doc.txt"
+          python3 g.py push P1 --remote "$tmp/remote" --dry-run --json --path "$tmp" \
+            > "$tmp/out.json"
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1]))[0]; \
+            assert d['archive'] is None and d['dry_run'] is True, d" "$tmp/out.json"
+          python3 g.py push P1 --remote "$tmp/remote" --dry-run --path "$tmp" | grep -q 'tar.gz'
+          # Dry-run must not transfer, stage, or leave a tombstone behind.
+          test ! -e "$tmp/remote"
+          test ! -e "$tmp/Project/P0001 Alpha/.gwarchive-offload.json"
+          # A dry-run restore of a folder with no archive block takes the
+          # per-file mirror path, which is what this asserts -- not the
+          # archive path the leg's name describes.
+          python3 g.py restore P1 --remote "$tmp/remote" --dry-run --path "$tmp"
+      - name: verify fails an archive with duplicate prefixes
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          python3 g.py init --path "$tmp"
+          mkdir -p "$tmp/Archive/A0001 One" "$tmp/Archive/A0001 Two"
+          if python3 g.py verify --path "$tmp"; then
+            echo "verify exited 0 on a duplicated prefix" >&2
+            exit 1
+          fi
