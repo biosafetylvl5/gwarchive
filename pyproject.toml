@@ -17,7 +17,9 @@
 [build-system]
 # uv.lock does NOT pin build backends -- they resolve fresh in an isolated
 # build env on every `uv build`, so the floor here is the only constraint.
-requires = ["hatchling>=1.26"]
+# 1.27 is the first release that understands PEP 639's SPDX `license` string
+# and `license-files`; older ones reject the [project].license below.
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -38,16 +40,21 @@ description = "Organize folders under the GWArchive naming standard"
 readme = "README.md"
 requires-python = ">=3.11"
 
-# Only this one. The `Programming Language :: Python :: 3.x` block would be a
+# No classifiers. The `Programming Language :: Python :: 3.x` block would be a
 # fourth unenforced copy of the Python version (requires-python, .ruff.toml's
-# target-version, [tool.mypy].python_version are the other three), and
-# "Private :: Do Not Upload" is an unregistered classifier that PyPI rejects
-# outright -- an accidental `twine upload` fails instead of publishing.
-classifiers = ["Private :: Do Not Upload"]
+# target-version, [tool.mypy].python_version are the other three).
+#
+# "Private :: Do Not Upload" used to sit here: an unregistered classifier PyPI
+# rejects outright, so an accidental upload failed. It was removed when the
+# package started publishing through package-and-publish.yaml. Putting it back
+# makes every release fail at the upload step.
 
-# No `license` key: the LICENSE decision is deliberately deferred, and
-# declaring a license without shipping its file is a false claim.
-# No [project.urls]: there is no remote yet.
+# PEP 639: an SPDX expression plus the file that carries the text. Not the
+# `License ::` classifier -- PEP 639 deprecates those, and the classifier set
+# above is deliberately empty. LICENSE is the CC0 1.0 legal code verbatim, as
+# published at creativecommons.org; do not reflow or "tidy" it.
+license = "CC0-1.0"
+license-files = ["LICENSE"]
 
 # typer>=0.16.0 is a correctness floor, measured by installing each release and
 # running the CLI plus the full suite, not a hygiene guess. Three stacked
@@ -89,6 +96,11 @@ dependencies = [
     "rich>=13.7",
 ]
 
+# After every bare [project] key, not beside the other metadata: a table header
+# ends [project], so any key written below it lands in this table instead.
+[project.urls]
+Repository = "https://github.com/biosafetylvl5/gwarchive"
+
 [project.scripts]
 gwarchive = "gwarchive.__main__:main"
 
@@ -98,9 +110,10 @@ gwarchive = "gwarchive.__main__:main"
 # The extras exist for pip-shaped installs -- ci-pipeline.yaml runs
 # `uv pip install -e .[doc,lint,test]`, which cannot see a dependency group.
 # The groups exist for uv: `uv sync --group test` is what tests.yaml and
-# static.yaml install from the lock. Extras are published metadata, which would
-# normally argue against putting tooling in them, but the "Do Not Upload"
-# classifier above means nothing is published.
+# static.yaml install from the lock. Extras are published metadata, so these
+# appear on PyPI as `gwarchive[test]` and friends; that is the accepted cost of
+# ci-pipeline.yaml and the release workflow's pre-publish tests both being able
+# to `pip install` them.
 #
 # The lists live in the extras and the groups name them (`gwarchive[test]`).
 # uv resolves that self-reference to the project, so there is one copy to edit
@@ -178,6 +191,7 @@ include = [
     "/scripts",
     "/docs",
     "/README.md",
+    "/LICENSE",
     "/.ruff.toml",
     "/uv.lock",
 ]

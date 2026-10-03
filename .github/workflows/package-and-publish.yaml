@@ -6,13 +6,18 @@ on:
 
   workflow_dispatch:
 
+# No id-token here. Granted at workflow level it would let the build and test
+# jobs -- which install and run third-party code -- mint a PyPI upload token
+# too. Only publish-pypi asks for it.
 permissions:
   contents: read
-  id-token: write
-  
+
+# Never cancel a release in flight: a publish interrupted between files can
+# leave PyPI holding the sdist without the wheel, and PyPI never lets a
+# filename be uploaded twice. A second trigger queues instead.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   UV_SYSTEM_PYTHON: true
@@ -29,11 +34,11 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Install build tools
-        run: uv pip install build
-
+      # The same command as build.yaml, so what is released is what CI built
+      # on every push. hatchling resolves fresh in an isolated build env either
+      # way -- uv.lock does not pin build backends.
       - name: Build sdist and wheel
-        run: python -m build
+        run: uv build
 
       - name: List built artifacts
         run: ls -lh dist/
@@ -68,11 +73,14 @@ jobs:
           name: dist
           path: dist/
 
+      # The wheel with its own [test] extra, so the pre-publish run gets the
+      # same test dependencies as every other leg -- click>=8.2 included, which
+      # 48 tests need for a separately captured result.stderr.
       - name: Install wheel and test dependencies
         shell: bash
         run: |
-          uv pip install dist/*.whl
-          uv pip install pytest pytest-cov pytest-xdist pydantic
+          wheel=$(ls dist/*.whl)
+          uv pip install "${wheel}[test]"
 
       - name: Run tests
         run: python -m pytest tests/ -v
@@ -80,9 +88,25 @@ jobs:
   # ---------------------------------------------------------------------------
   # Publish to PyPI
   # ---------------------------------------------------------------------------
+  #
+  # Trusted publishing (OIDC): no API token, no `password:` input, no secret.
+  # PyPI must have a trusted publisher registered for exactly
+  #   owner biosafetylvl5 / repo gwarchive /
+  #   workflow package-and-publish.yaml / environment pypi
+  # and a mismatch in any of the four is rejected. Renaming this file or the
+  # environment means updating the publisher on PyPI to match.
   publish-pypi:
     needs: [build, test-built-package]
     runs-on: ubuntu-latest
+    # workflow_dispatch can be started from any branch. Building and testing
+    # from one is fine; publishing from one is not. A manual publish must be
+    # dispatched from a v* tag, which is what commitizen creates.
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/gwarchive
+    permissions:
+      id-token: write
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4

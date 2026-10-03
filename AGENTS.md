@@ -206,10 +206,15 @@ separate jobs), `smoke.yaml` (the install, not the behaviour), `build.yaml`
 with an argument-parsing error, and `--locked` is the stronger guarantee — it
 also fails when `uv.lock` no longer matches `pyproject.toml`.
 
-**There is still no git remote**, so none of this has ever run on GitHub. `act`
-is the only verification available, and it cannot run `build.yaml`'s
-`upload-artifact` step without `--artifact-server-path`. Prefer putting a check
-in pytest over putting it in CI: pytest is the thing that actually runs.
+`package-and-publish.yaml` builds, tests the built wheel, and publishes to PyPI
+on a GitHub release, through **trusted publishing** -- there is no API token.
+PyPI's publisher is pinned to that filename and the `pypi` environment, so
+renaming either breaks releases until the publisher on PyPI is updated.
+
+The remote is `github.com/biosafetylvl5/gwarchive`. Locally, `act` still cannot
+run `build.yaml`'s `upload-artifact` step without `--artifact-server-path`.
+Prefer putting a check in pytest over putting it in CI: pytest is the thing
+that runs everywhere.
 
 Two hooks are deliberately absent from `.pre-commit-config.yaml` and the reasons
 are in that file. `default_install_hook_types` is load-bearing — without it a
