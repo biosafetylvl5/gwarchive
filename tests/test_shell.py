@@ -7,12 +7,15 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from conftest import run
 
 from gwarchive import external
+from gwarchive.commands.shell import launcher
+from gwarchive.output import program
 
 
 def test_cd_help_does_not_reference_a_nonexistent_binary() -> None:
@@ -152,3 +155,21 @@ def test_the_title_hook_runs_in_a_real_shell(archive: Path, tmp_path: Path, shel
     assert installed.count("_gwarchive_title") == 1
     if shell == "bash":
         assert installed == "echo mine\n_gwarchive_title"
+
+
+def test_a_frozen_binary_relaunches_itself_and_hints_its_own_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevents the release binaries emitting `<binary> -m gwarchive`.
+
+    A PyInstaller binary's sys.executable is the binary, which takes no `-m`,
+    and its release name is not `gwarchive`, so neither the console-script nor
+    the fallback branch fits. This is a stand-in for the real thing, which only
+    the release workflow's smoke steps run.
+    """
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "/opt/gwarchive-linux-x86_64")
+    assert launcher() == ["/opt/gwarchive-linux-x86_64"]
+    assert program() == "gwarchive-linux-x86_64"
+
+    # Windows: `.exe` is not part of what a user types.
+    monkeypatch.setattr(sys, "executable", "/opt/gwarchive-windows-x86_64.exe")
+    assert program() == "gwarchive-windows-x86_64"

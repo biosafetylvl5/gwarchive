@@ -1,0 +1,30 @@
+enhancement:
+  - title: "Releases ship g.pyz and a standalone executable for each platform"
+    description: |
+      Every GitHub release now has downloads attached: `g.pyz`, for any
+      machine with Python 3.11 or newer, and a single executable that needs no
+      Python at all, for Linux, macOS and Windows on both x86_64 and arm64.
+      A `SHA256SUMS` file covers all of them.
+
+      The executables name themselves in hints and in `shell-init`, so
+      `gwarchive-linux-x86_64` works without being renamed. Rename it to
+      `gwarchive` if you'd rather type that.
+    files:
+      added:
+        - scripts/build_binary.py
+      deleted: []
+      modified:
+        - .github/workflows/package-and-publish.yaml
+        - .github/workflows/build.yaml
+        - src/gwarchive/output.py
+        - src/gwarchive/commands/shell.py
+        - pyproject.toml
+        - uv.lock
+        - README.md
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null

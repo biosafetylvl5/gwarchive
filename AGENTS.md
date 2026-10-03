@@ -161,7 +161,12 @@ leg in `tests.yaml`.
   `COMMITIZEN_START_REV`.
 - `package-and-publish.yaml`: publishes to PyPI on a GitHub release, by trusted
   publishing. PyPI pins that filename and the `pypi` environment; renaming
-  either breaks releases.
+  either breaks releases. It also attaches `g.pyz`, six PyInstaller binaries
+  (`scripts/build_binary.py`; linux/macos/windows × x86_64/arm64) and
+  `SHA256SUMS` to the release. Dispatched from a branch it builds and tests
+  everything and publishes nothing.
+- A binary is `sys.frozen`: `program()` hints with its own name and
+  `launcher()` returns the binary itself, since it has no `-m`.
 
 Use `UV_LOCKED`, not `UV_FROZEN`: uv rejects `UV_FROZEN` alongside `--locked`,
 and `--locked` also catches a lock out of step with `pyproject.toml`. Pin

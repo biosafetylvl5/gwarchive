@@ -6,10 +6,11 @@
 # zipapp runs -- smoke.yaml does, on a deliberately bare interpreter, which is
 # the only place that proof means anything.
 #
-# There is no release.yaml and no changelog.yaml, deliberately. With no git
-# remote they can never run, cannot be validated by `act`, and would be wrong by
-# the time there is one. Their inputs (changelog/ fragments, brassy
-# --output-to-console) are exercised locally instead.
+# Releases are package-and-publish.yaml's job. It rebuilds g.pyz the same way,
+# plus a native binary per platform, and attaches both to the GitHub release.
+# The binaries are not built here: six runners on every push is a lot for
+# something only a release ships. Dispatch package-and-publish.yaml from a
+# branch to exercise them; it publishes nothing unless run from a v* tag.
 name: Build
 
 on:

@@ -16,6 +16,7 @@ words:
   - commitizen
   - COMMITIZEN
   - dateparser
+  - distpath
   - docstrings
   - Dunder
   - esbenp
@@ -37,13 +38,16 @@ words:
   - newplatform
   - njpwerner
   - NOAA
+  - noconfirm
   - numpy
+  - onefile
   - pathlib
   - pinkrst
   - pycodestyle
   - pydantic
   - pydocstyle
   - Pyflakes
+  - pyinstaller
   - Pylint
   - pytest
   - Pytest
@@ -54,6 +58,7 @@ words:
   - rabbitmqhost
   - seviri
   - snekvik
+  - specpath
   - sphinxarg
   - tamasfe
   - testhost
@@ -62,6 +67,7 @@ words:
   - typer
   - Uttmark
   - viewcode
+  - workpath
   - xarray
   - yday
   # Project, stdlib and tooling vocabulary.

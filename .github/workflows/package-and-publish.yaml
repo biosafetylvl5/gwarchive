@@ -1,3 +1,9 @@
+# On a GitHub release: publish the sdist and wheel to PyPI, and attach the
+# single-file builds to the release -- g.pyz for anyone with Python 3.11+, and
+# a native executable per platform for anyone without.
+#
+# Dispatched from a branch, everything builds and is tested and nothing is
+# published -- which is how to try a change to this file before a release.
 name: Publish to PyPI
 
 on:
@@ -26,13 +32,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.2.0
 
       # The same command as build.yaml, so what is released is what CI built
       # on every push. hatchling resolves fresh in an isolated build env either
@@ -44,7 +50,7 @@ jobs:
         run: ls -lh dist/
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -59,16 +65,16 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.2.0
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -84,6 +90,161 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v
+
+  # The same build as build.yaml, on the same 3.11 floor for the same reason
+  # (see the comment there), and the same bare-interpreter check as smoke.yaml.
+  zipapp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Not UV_LOCKED: build_zipapp.py runs `uv export --frozen`, and uv rejects
+      # the two together. The script carries the lock guarantee itself.
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        id: python
+        with:
+          python-version: '3.11'
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Point uv at exactly the interpreter setup-python installed
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      - name: Build the zipapp
+        run: python3 scripts/build_zipapp.py
+
+      # `uv run --no-project`, so the archive cannot borrow typer and rich from
+      # an environment; nothing here has been synced, but that is not promised.
+      - name: The zipapp runs with nothing installed
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          uv run --no-project -- python dist/g.pyz --version
+          uv run --no-project -- python dist/g.pyz init --path "$tmp"
+          uv run --no-project -- python dist/g.pyz create P Alpha --path "$tmp"
+          uv run --no-project -- python dist/g.pyz verify --path "$tmp"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-g.pyz
+          path: dist/g.pyz
+          if-no-files-found: error
+
+  # One native executable per platform, each built on that platform: PyInstaller
+  # does not cross-compile. Linux builds on 22.04 rather than ubuntu-latest
+  # because the binary links the runner's glibc, and an older glibc is the one
+  # that runs on more machines. macos-15-intel is the last Intel macOS image.
+  binary:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-22.04, name: gwarchive-linux-x86_64}
+          - {runner: ubuntu-22.04-arm, name: gwarchive-linux-arm64}
+          - {runner: macos-15, name: gwarchive-macos-arm64}
+          - {runner: macos-15-intel, name: gwarchive-macos-x86_64}
+          - {runner: windows-latest, name: gwarchive-windows-x86_64.exe}
+          - {runner: windows-11-arm, name: gwarchive-windows-arm64.exe}
+    env:
+      UV_LOCKED: true
+      UV_PYTHON_DOWNLOADS: never
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      # The bundled interpreter, so the newest CI-tested Python rather than the
+      # floor: a user of the binary never sees it.
+      - uses: actions/setup-python@v7
+        id: python
+        with:
+          python-version: '3.13'
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Point uv at exactly the interpreter setup-python installed
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      - name: Build the binary
+        run: uv run --no-dev --group binary python scripts/build_binary.py
+
+      # The name check catches the script and the matrix disagreeing, which
+      # would otherwise surface as a missing release asset.
+      #
+      # Run from outside the checkout, so nothing can be imported from src/.
+      # The hint and shell-init checks are the two places a binary differs from
+      # the console script: both must name the binary, not `gwarchive`.
+      - name: The binary runs
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          bin="$PWD/dist/$NAME"
+          test -f "$bin"
+          tmp=$(mktemp -d)
+          cd "$tmp"
+          "$bin" --version
+          "$bin" init --path "$tmp"
+          "$bin" create P Alpha --path "$tmp"
+          "$bin" mksub P1 Notes --path "$tmp"
+          "$bin" verify --path "$tmp"
+          test -n "$("$bin" cd P1 --path "$tmp")"
+          "$bin" list R --path "$tmp" 2>&1 | grep -q "${NAME%.exe} create R"
+          "$bin" shell-init --path "$tmp" | grep -q "$NAME"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.name }}
+          path: dist/${{ matrix.name }}
+          if-no-files-found: error
+
+  # Attaches g.pyz, the six binaries and one SHA256SUMS to the release. Gated
+  # like publish-pypi, and not dependent on it: a PyPI failure should not hold
+  # back the downloads, nor the other way round. --clobber makes a re-run, or a
+  # dispatch from the tag after a failure, replace rather than refuse.
+  release-assets:
+    needs: [test-built-package, zipapp, binary]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: assets/
+
+      # Artifacts do not keep the exec bit. Restoring it changes nothing a user
+      # downloads -- release assets carry no mode -- but lets the check below run.
+      - name: The binaries are the tagged version
+        run: |
+          set -euo pipefail
+          chmod +x assets/gwarchive-linux-x86_64
+          test "$(assets/gwarchive-linux-x86_64 --version)" = "gwarchive ${TAG#v}"
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd assets
+          # Every name spelled out, so a missing one fails here, not silently.
+          sha256sum -- g.pyz \
+            gwarchive-linux-x86_64 gwarchive-linux-arm64 \
+            gwarchive-macos-arm64 gwarchive-macos-x86_64 \
+            gwarchive-windows-x86_64.exe gwarchive-windows-arm64.exe > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attach to the release
+        run: gh release upload "$TAG" assets/* --clobber --repo "$GITHUB_REPOSITORY"
 
   # ---------------------------------------------------------------------------
   # Publish to PyPI
@@ -109,7 +270,7 @@ jobs:
       id-token: write
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/

@@ -31,6 +31,18 @@ Or run `g.pyz`, a self-contained zipapp, with no install:
 ./g.pyz --help
 ```
 
+Or, with no Python at all, download the executable for your platform from the
+[latest release](https://github.com/biosafetylvl5/gwarchive/releases/latest):
+`gwarchive-linux-x86_64`, `gwarchive-linux-arm64`, `gwarchive-macos-arm64`,
+`gwarchive-macos-x86_64`, `gwarchive-windows-x86_64.exe` or
+`gwarchive-windows-arm64.exe`. `SHA256SUMS` sits beside them.
+
+```bash
+curl -LO https://github.com/biosafetylvl5/gwarchive/releases/latest/download/gwarchive-linux-x86_64
+chmod +x gwarchive-linux-x86_64
+./gwarchive-linux-x86_64 --help
+```
+
 ## Use
 
 ```bash

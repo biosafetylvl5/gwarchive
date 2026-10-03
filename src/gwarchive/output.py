@@ -290,7 +290,13 @@ def program() -> str:
     advice about what to type; `launcher()` in commands/shell.py answers the
     different question of what to EXECUTE, and its answer goes into the emitted
     shell functions, where the string is run rather than read.
+
+    Under a PyInstaller binary it is the binary's own name, minus any `.exe`:
+    the release ships `gwarchive-linux-x86_64` and friends, and a user who never
+    renamed theirs has no `gwarchive` to type either.
     """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).stem
     argv0 = Path(sys.argv[0])
     if argv0.suffix == ".pyz":
         return f"python {argv0.name}"

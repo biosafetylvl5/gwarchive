@@ -166,6 +166,11 @@ release = [
     "brassy",
     "commitizen",
 ]
+# scripts/build_binary.py, run only by the release workflow's binary matrix.
+# A group rather than `uv run --with pyinstaller` so the bundler is pinned by
+# uv.lock like everything else that shapes a shipped artifact. Not in `dev`:
+# nothing in the gate needs it.
+binary = ["pyinstaller"]
 dev = [
     {include-group = "test"},
     {include-group = "lint"},

@@ -41,6 +41,7 @@ def launcher() -> list[str]:
 
         console script   ['/Users/x/.local/bin/gwarchive']
         zipapp           ['/usr/bin/python3', '/opt/g.pyz']
+        binary           ['/opt/gwarchive-linux-x86_64']
         checkout / test  ['/path/.venv/bin/python', '-m', 'gwarchive']
 
     This is not `program()`. That one answers "what should I tell the user to
@@ -53,7 +54,13 @@ def launcher() -> list[str]:
     Path(__file__).resolve(), which pointed at g.py when g.py was the whole
     tool and points at a package submodule now -- a path that exists but is not
     runnable, because its absolute imports fail when it is executed as a script.
+
+    A PyInstaller binary is checked first. Its sys.executable is the binary
+    itself, which has no `-m`, and its release name is not `gwarchive` -- so
+    without this it would fall through to `[binary, '-m', 'gwarchive']`.
     """
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
     argv0 = Path(sys.argv[0])
     if argv0.name == "gwarchive" and argv0.is_file():
         return [str(argv0.resolve())]
