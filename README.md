@@ -1,78 +1,113 @@
-# PROJECT
+# gwarchive
 
-![Tests](.github/badges/tests-badge.svg)
-![Coverage](.github/badges/coverage-badge.svg)
-![Mypy](.github/badges/mypy-badge.svg)
-![Ruff](.github/badges/ruff-badge.svg)
-![Install](.github/badges/install-badge.svg)
-![CSpell](.github/badges/cspell-badge.svg)
-![Commitizen](.github/badges/commitizen-badge.svg)
+A command-line tool for organizing folders under the GWArchive naming standard.
 
-[![GitHub stars](https://img.shields.io/github/stars/biosafetylvl5/PROJECT.svg)](https://github.com/biosafetylvl5/PROJECT/stargazers)
+Five categories, each a directory, each with a letter:
 
-## Contributing
+| Letter | Directory   | For |
+|--------|-------------|-----|
+| `P`    | `Project`   | active work with an end |
+| `R`    | `Recurring` | work that comes back |
+| `M`    | `Material`  | reference that is not a project |
+| `A`    | `Archive`   | finished, kept |
+| `O`    | `Old`       | retired, date-stamped |
 
-I welcome contributions to PROJECT!
+Folders are named `P0001 Descriptor`, subfolders `P0001.01 Descriptor`, and
+retired folders `YYYY-MM-DD-P0001-Descriptor`.
 
-Please follow these general guidelines:
+**A prefix is a permanent identifier.** It is allocated once, it is never
+reissued, and it travels with the folder across category moves — so a folder
+created in `Project` keeps its `P` prefix after it is moved into `Archive`. A
+*copy* is a new thing and gets a fresh identifier. There is no index or
+database; the filesystem is the source of truth.
 
-1.  **Fork the repository** on GitHub.
-2.  **Create a new branch** for your feature or bug fix. (eg. `git checkout -b feature/your-feature-name` or `fix/issue-number-description`)
-3.  **Make your changes** and **ensure all linters and tests pass** (the CI will also check for you, but it's helpful to run them locally).
-4.  **Commit your changes** using [Conventional Commits](https://www.conventionalcommits.org/) (see "Commit Messages" below).
-5.  **Push your branch** to your fork.
-6.  **Open a Pull Request** against the `main` (or `dev`) branch of the `biosafetylvl5/PROJECT` repository.
-7.  Clearly describe your changes in the PR. If it fixes an open issue, please link to it (e.g., "Fixes #123").
+## Install
 
-If you're planning a larger contribution, it's a good idea to open an issue first to discuss your ideas so your work isn't duplicated/done in vain.
+```bash
+uv tool install gwarchive
+```
 
-### Setting up Your Development Environment
+Or run a single self-contained artifact with no install at all — `g.pyz` vendors
+its dependencies:
 
-#### Using Dev Containers (Recommended)
+```bash
+./g.pyz --help
+```
 
-This repository is configured to use [VS Code Dev Containers](https://code.visualstudio.com/docs/devcontainers/containers). This is the recommended way to set up your development environment, as it ensures consistency and comes pre-configured with all necessary tools.
+## Use
 
-1.  Ensure you have Docker Desktop and the "Dev Containers" extension installed in VS Code.
-2.  Clone the repository: `git clone https://github.com/biosafetylvl5/PROJECT.git`
-3.  Open the cloned repository folder in VS Code. (You can also do this [without VS code](https://github.com/devcontainers/cli), but that's up to you to figure out.)
-4.  VS Code should prompt you to "Reopen in Container". Click it.
-    *   If it doesn't prompt, open the command palette (`Ctrl+Shift+P` or `Cmd+Shift+P`) and search for "Dev Containers: Reopen in Container".
-5.  The dev container will build (this might take a few minutes the first time). Once built, VS Code will be connected to the containerized environment, with Python, Poetry, and all project dependencies (including development tools and plugins) already installed and configured.
+```bash
+gwarchive init                        # create the five category directories
+gwarchive create P "Thesis draft"     # -> Project/P0001 Thesis draft
+gwarchive mksub P1 "Figures"          # -> Project/P0001 Thesis draft/P0001.01 Figures
+gwarchive list P                      # a table, or --json
+gwarchive find thesis                 # exits 1 on no match, so it composes like grep
+gwarchive mv P1 Archive               # the prefix comes along
+gwarchive oldify P1                   # retire into Old/ with today's date
+gwarchive verify                      # audit the whole tree
+```
 
-### Running Tests
+Every mutating command takes `--dry-run`, and dry-run output has the same shape
+as the real thing (`Would move` vs `Moved`).
 
-I use [pytest](https://docs.pytest.org/) for testing.
+### Shell navigation
 
-1.  **Run all tests**:
-    ```bash
-    poetry run pytest
-    ```
-    This will also generate a coverage report in the terminal and an XML report (`coverage.xml`).
+```bash
+eval "$(gwarchive shell-init)"
+gcd P1        # cd to the folder with that prefix, wherever it now lives
+```
 
-2.  **Run tests with specific markers**:
-    For example, to skip slow tests:
-    ```bash
-    poetry run pytest -m "not slow"
-    ```
+### Remote sync
 
-### Commit Messages
+Backed by [rclone](https://rclone.org). Set `$GWARCHIVE_REMOTE` or pass
+`--remote`:
 
-This project uses [Commitizen](https://commitizen-tools.github.io/commitizen/) with the `cz_conventional_commits` style. This helps create a more readable and structured commit history.
+```bash
+gwarchive push P1        # upload, keep the local copy
+gwarchive offload P1     # upload, delete locally, leave a tombstone
+gwarchive pull P1        # fetch back
+gwarchive restore P1     # fetch back and clear the tombstone
+```
 
-* **If using the Dev Container or after `poetry install --all-extras`**:
-    You can use `cz c` or `git cz` (if hooks are set up) to be interactively guided through creating a commit message:
-    ```bash
-    poetry run cz commit
-    # or simply if commitizen is on your PATH / using dev container
-    # cz c
-    ```
-* **Manually**:
-    Ensure your commit messages follow the [Conventional Commits specification](https://www.conventionalcommits.org/en/v1.0.0/).
-    Example: `feat: add user authentication endpoint`
-    Common types: `feat`, `fix`, `build`, `chore`, `ci`, `docs`, `style`, `refactor`, `perf`, `test`.
+An offloaded folder keeps its name and prefix on disk while the bytes live on
+the remote. The tombstone it leaves — `.gwarchive-offload.json` — is also the
+version index; the tool never lists the remote to find out what is there.
 
-### Documentation
+Folders are pushed as one compressed object (`tar.zst`, falling back to
+`tar.gz` when `zstd` is absent), written as a *sibling* of the mirror path. The
+extension is the codec's own on purpose: lose the tombstone entirely and
+`zstd -d < x.tar.zst | tar -tvf -` is still a complete recovery path.
 
-All substantial changes must be accompanied by a changelog release file. These can be created with [`brassy`](https://biosafetylvl5.github.io/brassy/) in `docs/source/release/latest` with `brassy -t $filename` or `brassy -t` to name the file after your current branch.
+## Exit codes
 
-If your changes affect documentation or add new features that need documenting, please update the other documentation in the `docs/` directory. Documentation is built using Sphinx and brassy.
+| Code | Meaning |
+|------|---------|
+| `0`  | success |
+| `1`  | runtime failure — not found, ambiguous prefix, refused overwrite, no matches |
+| `2`  | invalid input — a bad category, a bad date, a malformed `--remote` |
+
+Errors go to stderr. `--json` owns stdout: no spinner, no prompt, no trailing
+receipt shares it.
+
+## Environment
+
+| Variable | Effect |
+|----------|--------|
+| `GWARCHIVE_BASE` | archive root (default `~/gwarchive`) |
+| `GWARCHIVE_REMOTE` | default rclone target |
+| `GWARCHIVE_CODEC` | force `zstd` or `gzip` |
+| `GWARCHIVE_COMPRESS` | default for `--no-compress` |
+| `GWARCHIVE_KEEP` | archived copies retained per remote |
+| `GWARCHIVE_POKEMON` | sprite for `clears` |
+
+## Development
+
+```bash
+uv sync                  # installs the dev group
+uv run pytest
+uv run mypy
+uv run ruff check . && uv run ruff format --check .
+```
+
+Conventions, the module layering, and the rules that keep the test seams
+working are in [AGENTS.md](AGENTS.md).

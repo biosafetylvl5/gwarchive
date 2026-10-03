@@ -1,0 +1,226 @@
+# Replaces pytest.yaml.
+#
+# The old file carried this comment above its install step:
+#
+#     # No pyproject.toml on purpose -- this project is g.py plus a test file.
+#     # Deliberately unpinned: the matrix exists partly to notice when typer or
+#     # rich move underneath us.
+#
+# Its first sentence is now false: there is a pyproject.toml, and the matrix
+# installs from uv.lock. Its second sentence is not -- "notice when typer or
+# rich move underneath us" was a real decision, and a locked matrix cannot make
+# that observation at all, because a lock is precisely a promise that nothing
+# moves. So the decision is not deleted with the comment; it moves into the
+# `canary` job below, which re-resolves everything at its newest version once a
+# week and opens an issue when that stops working. The pinned matrix answers
+# "does this checkout work?"; the canary answers "is the ecosystem still where
+# we left it?". The old comment conflated the two and got neither.
+name: Tests
+
+on:
+  push:
+    branches: 'main'
+  pull_request:
+  # `schedule` fires only on the repository's default branch, and GitHub
+  # disables scheduled workflows after 60 days with no repository activity. A
+  # canary that has been switched off is indistinguishable from a green one, so
+  # `workflow_dispatch` is kept as the manual way to ask the question directly.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded pushes to a PR are worth cancelling; a half-finished run on main
+  # or a half-finished canary is not.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The plan asks for `UV_FROZEN: "1"` here, alongside `uv sync --locked`.
+  # Measured against uv 0.12.5, those two cannot coexist:
+  #
+  #     error: the argument `--locked` cannot be used with `UV_FROZEN`
+  #            (environment variable)
+  #
+  # The job would die in argument parsing, before installing anything. The
+  # conflict is symmetric and it is not special to `sync` -- `UV_LOCKED=1` plus
+  # `uv export --frozen` fails the same way, which is why the two workflows that
+  # shell out to `scripts/build_zipapp.py` set no lock env var at all.
+  #
+  # UV_LOCKED is the env-var spelling of `--locked`, it composes with an
+  # explicit `--locked` (verified: no conflict, no warning), and it is the
+  # stronger of the two guarantees. `--frozen` uses uv.lock as found; `--locked`
+  # additionally fails when uv.lock no longer matches pyproject.toml. That
+  # second half is the case CI exists to catch -- verified by editing
+  # `[project].dependencies` without re-locking, which fails with
+  # "hint: To update the lockfile, run `uv lock`". Under UV_FROZEN that edit
+  # would have passed silently.
+  #
+  # Accepted values are boolish. `UV_LOCKED: ""` is not one of them -- it is a
+  # hard error ("expected a boolish value"), so the canary below overrides with
+  # "0", which is honoured as false.
+  UV_LOCKED: "1"
+  # The 3.11.0 leg exists to exercise one exact interpreter. Without this, a uv
+  # that dislikes the interpreter it was handed downloads a different one and
+  # the leg silently tests something else. With it, a mismatch is loud:
+  # "error: No interpreter found at path ...".
+  UV_PYTHON_DOWNLOADS: never
+
+jobs:
+  test:
+    name: pytest (${{ matrix.python-version }})
+    # The canary re-resolves and is expected to churn; it must not run the
+    # pinned matrix twice a week for nothing.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # '3.11.0' is not a typo and not redundant with '3.11'.
+        #
+        # AGENTS.md:441-447: extraction vets every member itself rather than
+        # trusting tarfile's `filter="data"`, because that landed in 3.12 and
+        # was backported only as far as 3.11.4, while the floor admits 3.11.0 --
+        # "so the vulnerable range is exactly the range nothing exercises".
+        # '3.11' resolves to the newest 3.11.x on the runner, which has the
+        # backport, so the floating leg cannot reach `_vet_member`'s reason for
+        # existing. This leg is that range.
+        python-version: ['3.11.0', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v7
+
+      # MEASURED, and the reason this is actions/setup-python rather than
+      # setup-uv's own `python-version:` input: uv cannot install 3.11.0. There
+      # is no such build in python-build-standalone on ANY platform (`uv python
+      # list --all-versions --all-platforms | grep -c 'cpython-3.11.0-'` -> 0;
+      # 3.11.2 is missing too), and asking for it fails with
+      # "error: No download found for request: cpython-3.11.0-...".
+      # actions/python-versions does ship 3.11.0 for linux-x64, marked stable.
+      # So: setup-python supplies the interpreter, setup-uv supplies uv, and
+      # UV_PYTHON below welds them together.
+      - uses: actions/setup-python@v7
+        id: python
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Point uv at exactly the interpreter setup-python installed
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      # `--no-default-groups` is load-bearing, not tidiness. uv syncs the `dev`
+      # group by default, and the plan's `dev` includes all four groups -- so a
+      # plain `uv sync --group test` installs the lint and release tooling into
+      # every matrix leg. Measured on a stand-in project: 15 packages with the
+      # default groups, 12 with `--no-default-groups --group test`, the
+      # difference being ruff, typos and vulture. On the real tree the release
+      # group additionally drags in brassy's pydantic/pygit2/dateparser, which
+      # the plan explicitly wants kept out of the 3-leg matrix.
+      - name: Install from the lock
+        run: uv sync --locked --no-default-groups --group test
+
+      # `--no-sync` is the other half of that. Measured: a bare `uv run` after
+      # `uv sync --no-default-groups` re-syncs with the default groups and puts
+      # ruff, typos and vulture back into .venv ("Installed 3 packages"),
+      # silently undoing the previous step.
+      - name: Run the suite
+        run: uv run --no-sync pytest -v
+
+  canary:
+    # The surviving half of pytest.yaml's "notice when typer or rich move
+    # underneath us". Deliberately unpinned, deliberately allowed to fail.
+    name: Weekly unpinned resolve
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A red canary is information, not a broken build: everyone installing from
+    # the committed lock is unaffected. It must never gate a merge, or the first
+    # upstream release with a deprecation warning blocks the repository.
+    continue-on-error: true
+    permissions:
+      contents: read
+      # Only this job writes issues, and only to report itself.
+      issues: write
+    env:
+      # Overrides the workflow-level "1". The canary's entire purpose is to
+      # ignore the lock, and under UV_LOCKED=1 `uv lock --upgrade` does not
+      # error -- it warns ("was only checked for validity, not whether it is
+      # up-to-date") and upgrades nothing, so the job would run green against
+      # the pinned versions and prove precisely nothing. "0" is honoured as
+      # false; "" is a hard parse error.
+      UV_LOCKED: "0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v10
+        # No cache: a cached resolve is the one thing this job must not reuse.
+
+      - name: Re-resolve every dependency at its newest version
+        id: resolve
+        continue-on-error: true
+        run: uv lock --upgrade
+
+      # Runs even when the resolve failed, so the issue body has something to
+      # point at. uv.lock is modified in the runner's checkout only; nothing
+      # commits it.
+      - name: Show what moved
+        if: always()
+        run: git --no-pager diff --stat -- uv.lock
+
+      - name: Run the suite against the newest resolve
+        id: canary
+        if: steps.resolve.outcome == 'success'
+        continue-on-error: true
+        run: |
+          uv sync --no-default-groups --group test
+          uv run --no-sync pytest -q
+
+      - name: Open an issue when the canary is red
+        if: steps.resolve.outcome == 'failure' || steps.canary.outcome != 'success'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const label = 'dependency-canary';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const stage = '${{ steps.resolve.outcome }}' === 'failure'
+              ? 'the resolve itself failed -- something upstream is now unsatisfiable'
+              : 'the resolve succeeded but the suite did not pass against it';
+            const body = [
+              'The weekly canary re-resolves every dependency at its newest version,',
+              'ignoring `uv.lock`, and runs the suite against that resolve. This week',
+              `${stage}.`,
+              '',
+              'Nothing is broken for anyone installing from the committed lock. This is',
+              'the early warning that typer, rich or a transitive dependency has moved',
+              'in a way this project does not survive -- the observation the old',
+              'unpinned pytest.yaml matrix used to make by accident.',
+              '',
+              `Run: ${runUrl}`,
+            ].join('\n');
+            // One rolling issue, commented on weekly, rather than a new issue
+            // every Monday for the same upstream break.
+            const open = await github.rest.issues.listForRepo({
+              ...context.repo, state: 'open', labels: label, per_page: 1,
+            });
+            if (open.data.length > 0) {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: open.data[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo,
+                title: 'Weekly dependency canary is red',
+                body,
+                labels: [label],
+              });
+            }

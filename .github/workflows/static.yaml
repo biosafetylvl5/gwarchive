@@ -1,0 +1,104 @@
+# Replaces lint.yaml and mypy.yaml, which were two files running one step each.
+#
+# Five checks, one matrix, one install path. They share nothing but the
+# checkout, so fail-fast is off: knowing only that "static failed" when three of
+# the five are red is worse than the two files it replaces.
+name: Static
+
+on:
+  push:
+    branches: 'main'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # See tests.yaml for why this is UV_LOCKED and not UV_FROZEN: the two cannot
+  # be combined with `--locked`, and `--locked` is the stronger guarantee
+  # because it also fails when uv.lock has drifted from pyproject.toml.
+  UV_LOCKED: "1"
+  UV_PYTHON_DOWNLOADS: never
+
+jobs:
+  check:
+    name: ${{ matrix.tool }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # vulture is the only soft leg. Until the split lands, the command bodies
+    # still live in g.py while the package grows around them, so its finding set
+    # churns commit to commit -- and a detector that is red for fifteen commits
+    # teaches people to ignore red. Remove this once the extraction is complete.
+    continue-on-error: ${{ matrix.tool == 'vulture' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # lint.yaml used astral-sh/ruff-action@v3 with no `version:`, which
+          # installs whatever ruff is newest, while .pre-commit-config.yaml pins
+          # ruff-pre-commit at a rev. The two can therefore disagree about what
+          # "clean" means, and have: `ruff format` began formatting Python
+          # fences inside Markdown in 0.16.0, so a pinned hook and an unpinned
+          # action do not even agree on which FILES are in scope. Running ruff
+          # from uv.lock makes CI and the hook answer to one pinned version.
+          - tool: ruff-check
+            groups: --group lint
+            run: uv run --no-sync ruff check .
+          - tool: ruff-format
+            groups: --group lint
+            run: uv run --no-sync ruff format --check .
+          # mypy needs the test dependencies installed or it cannot resolve the
+          # imports in tests/, which `files = ["src", "tests"]` puts in scope.
+          # The old mypy.yaml pip-installed `mypy typer rich pytest` by hand for
+          # exactly this reason; the group does it from the lock instead.
+          - tool: mypy
+            groups: --group types --group test
+            run: uv run --no-sync mypy
+          - tool: vulture
+            groups: --group lint
+            run: uv run --no-sync vulture
+          - tool: typos
+            groups: --group lint
+            run: uv run --no-sync typos
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      # --no-default-groups: uv syncs `dev` by default, and `dev` includes all
+      # four groups, so without it every leg installs every tool plus brassy's
+      # pydantic/pygit2/dateparser. --no-sync on the run step: a bare `uv run`
+      # re-syncs with the default groups and silently puts them back.
+      - name: Install from the lock
+        run: uv sync --locked --no-default-groups ${{ matrix.groups }}
+
+      # Lint scope is "." and must stay ".". lint.yaml passed `src: "."` to
+      # ruff-action for the same reason: narrowing to ./src would silently stop
+      # linting tests/, which is ~2,400 lines and which mypy's
+      # `files = ["src", "tests"]` does cover. A lint scope narrower than the
+      # type-check scope is a hole nobody notices, because nothing goes red.
+      #
+      # No `working-directory:` on this step, ever. vulture reads [tool.vulture]
+      # from the CURRENT WORKING DIRECTORY only -- it does not walk up the tree.
+      # Measured: run one directory below pyproject.toml and the entire config
+      # is discarded in silence, all suppressions with it, and the job fails
+      # with dozens of findings that look like real dead code. `paths` is pinned
+      # in [tool.vulture] so bare `uv run vulture` needs no arguments.
+      #
+      # typos likewise reads [tool.typos] from pyproject.toml, but skips every
+      # dotted path by default -- so this workflow file is not itself
+      # spell-checked unless [tool.typos.files] sets `ignore-hidden = false`
+      # (and excludes ".git/", or typos reports on compressed object blobs).
+      - name: ${{ matrix.tool }}
+        run: ${{ matrix.run }}

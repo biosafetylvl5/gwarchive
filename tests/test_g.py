@@ -2078,7 +2078,7 @@ def test_a_rename_between_pushes_does_not_invert_the_version_index(
     assert deleted == ["P0001 Alpha [draft].20260101-000001.tar.gz"]
     # And the newest is what a bare restore reaches for.
     arch = (g.read_tombstone(folder) or {})["archive"]
-    assert g.select_version(arch, None)["name"] == "P0001 Aardvark.20260101-000003.tar.gz"  # type: ignore[arg-type,index]
+    assert g.select_version(arch, None)["name"] == "P0001 Aardvark.20260101-000003.tar.gz"  # type: ignore[arg-type]
 
 
 def test_prune_does_not_retry_a_delete_it_already_made(

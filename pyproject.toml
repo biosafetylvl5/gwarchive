@@ -1,98 +1,175 @@
-[tool.poetry]
-name = "PROJECT"
-version = "0.1.0"  # Starting with 0.1.0 is more standard than 0.0.0a
-description = "TODO"
-authors = ["Gwyn Uttmark <biosafetylevel5@gmail.com>"]
-license = ""
-repository = "https://github.com/biosafetylvl5/PROJECT"
+# ---------------------------------------------------------------------------
+# ruff's configuration is deliberately NOT in this file.
+#
+# It lives in .ruff.toml, standalone, and must stay there: when .ruff.toml
+# exists beside pyproject.toml, ruff reads .ruff.toml and a [tool.ruff] table
+# here is ignored SILENTLY -- no error, no warning, no hint that the settings
+# never took effect. .ruff.toml is also 20-odd lines of measured rationale that
+# AGENTS.md cites; it reads as a design document when it is the whole file and
+# as scroll-past noise in the middle of a 200-line pyproject.
+#
+# Knock-on: .ruff.toml cannot infer `target-version` from `requires-python`
+# without a [project] table in the same file, so `py311` there and
+# `requires-python = ">=3.11"` here are hand-synced. test_config_floors_agree
+# parses both and asserts they match.
+# ---------------------------------------------------------------------------
 
-packages = [{include="project", from="src"}]
+[build-system]
+# uv.lock does NOT pin build backends -- they resolve fresh in an isolated
+# build env on every `uv build`, so the floor here is the only constraint.
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
 
+[project]
+name = "gwarchive"
+# STATIC on purpose; do NOT convert to [tool.hatch.version]/`dynamic`.
+# Two reasons, both load-bearing:
+#   1. commitizen's `version_provider = "pep621"` reads [project].version.
+#      Hatch dynamic versioning omits that key, so the two are mutually
+#      exclusive -- `cz bump` would have nothing to read.
+#   2. The reflex repair for a dynamic version
+#      (`__version__ = importlib.metadata.version("gwarchive")`) breaks inside
+#      the g.pyz zipapp, which carries no .dist-info to look up.
+# So: this key, plus a literal `__version__` in src/gwarchive/__init__.py,
+# kept in step by [tool.commitizen].version_files. That is two declarations,
+# not one, and test_version_matches_package_metadata is the guard.
+version = "0.3.0"
+description = "Organize folders under the GWArchive naming standard"
 readme = "README.md"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Operating System :: OS Independent",
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Typing :: Typed",
+requires-python = ">=3.11"
+
+# Only this one. The `Programming Language :: Python :: 3.x` block would be a
+# fourth unenforced copy of the Python version (requires-python, .ruff.toml's
+# target-version, [tool.mypy].python_version are the other three), and
+# "Private :: Do Not Upload" is an unregistered classifier that PyPI rejects
+# outright -- an accidental `twine upload` fails instead of publishing.
+classifiers = ["Private :: Do Not Upload"]
+
+# No `license` key: the LICENSE decision is deliberately deferred, and
+# declaring a license without shipping its file is a false claim.
+# No [project.urls]: there is no remote yet.
+
+# typer>=0.16.0 is a correctness floor, measured by installing each release and
+# running the CLI plus the full suite, not a hygiene guess. Three stacked
+# constraints, each one strictly above the last:
+#   >=0.9.0   `default_factory=` inside typer.Option() exists at all.
+#             0.8.0: TypeError: Option() got an unexpected keyword argument
+#             'default_factory'. (Annotated support also lands in 0.9.0.)
+#             NB: this is NOT the binding constraint, despite being the one
+#             that is easiest to spot in the source.
+#   >=0.12.4  PEP 604 `X | None` in the 13 option/argument annotations.
+#             <=0.12.3: RuntimeError: Type not yet supported: str | None,
+#             raised inside app() at get_click_type -- so even `--help` dies,
+#             not merely the commands that use a union.
+#   >=0.16.0  tolerates click>=8.2, which the tests need for CliRunner's
+#             separately-captured result.stderr. 0.15.4 is the only release in
+#             typer's history that hard-caps `click<8.2`; 0.12.4-0.15.3 crash on
+#             click>=8.2 with
+#             TypeError: Parameter.make_metavar() missing 1 required
+#             positional argument: 'ctx'. 0.16.0 removed the cap.
+# Verified 191/191 green at 0.16.0, 0.17.4, 0.19.2, 0.21.1 and 0.27.2.
+#
+# rich is an unconditional dependency of typer from 0.12 onward (the old
+# `typer[all]` extra is gone), so this line is never what makes rich present.
+# It is declared because gwarchive imports rich directly -- rich.box,
+# rich.filesize.decimal, rich.status.Status, rich.panel.Panel -- and PEP 508
+# says declare what you import. The floor is hygiene, not measurement: the
+# suite is green all the way down to rich 10.11.0. Note that typer 0.27 asks
+# for rich>=13.8.0 itself, which quietly wins over this line anyway.
+#
+# No `click` entry: typer 0.27 dropped click as a dependency entirely, so a
+# floor here would install a package this tool does not import. The test leg's
+# click need is declared in [dependency-groups].test instead.
+#
+# No upper caps anywhere. A cap in published metadata is a promise binding
+# every installer forever; uv.lock is the statement about this checkout.
+dependencies = [
+    "typer>=0.16.0",
+    "rich>=13.7",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.11,<3.14"
-rich = "*"
-rich-argparse = "*"
+[project.scripts]
+gwarchive = "gwarchive.__main__:main"
 
-# Optional dependencies for extras
-sphinx = { version = "*", optional = true }
-sphinx-rtd-theme = { version = "*", optional = true }
-sphinx-argparse = { version = "*", optional = true }
-sphinx-copybutton = { version = "*", optional = true }
-sphinx-autodoc-typehints = { version = "*", optional = true }
-sphinxcontrib-mermaid = { version = "*", optional = true }
-myst-parser = { version = "*", optional = true }
-pinkrst = { version = "*", optional = true }
-doc8 = { version = "*", optional = true }
-prettier = { version = "*", optional = true }
-ruff = { version = "*", optional = true }
-mypy = { version = "*", optional = true }
-pytest = { version = "*", optional = true }
-pytest-cov = { version = "*", optional = true }
-pytest-xdist = { version = "*", optional = true }
-commitizen = { version = "*", optional = true }
-
-[tool.poetry.group.dev.dependencies]
-# Development dependencies that are always installed for development
-black = "*"
-pre-commit = "*"
-brassy = "*"
-commitizen = "*"
-
-[tool.poetry.extras]
-doc = [
-    "sphinx",                    # for docs building
-    "myst-parser",
-    "sphinx-rtd-theme",          # for docs building
-    "sphinx-copybutton",         # for docs building
-    "sphinx-autodoc-typehints",  # for docs building
-    "sphinxcontrib-mermaid",     # for docs building
-    "sphinx-argparse",           # for docs building
-    "pinkrst",                   # for rst formatting
-    "doc8",                      # for rst linting
-    "commitizen",                # for better commits
-]
-
-lint = [
-    "pinkrst",                   # for rst auto-formatting
-    "doc8",                      # for rst linting
-    "prettier",                  # YAML, JSON linting
-    "ruff",                      # Python linting
-    "mypy",                      # Type checking
-]
-
+# ---------------------------------------------------------------------------
+# Dependency groups (PEP 735), not extras. Extras are *published* -- they are a
+# feature of the distribution someone installs. Development tooling is not.
+# The split keeps `release` (brassy pulls pydantic, pygit2 and dateparser) out
+# of the three-Python test matrix, where it would triple install time to
+# support a job that does not run there.
+# ---------------------------------------------------------------------------
+[dependency-groups]
 test = [
-    "pytest",                    # for running tests
-    "pytest-cov",                # for test coverage
-    "pytest-xdist",              # for parallel testing
+    "pytest",
+    "pytest-cov",
+    # typer.testing.CliRunner only captures result.stderr separately from
+    # stdout on click>=8.2, and the suite asserts on result.stderr in 46
+    # places. typer>=0.16 permits click 8.2 but does not require it, so a
+    # resolver is free to hand the test leg click 8.1.x -- which fails 48
+    # tests with `ValueError: stderr not separately captured`. This pins the
+    # leg without putting a click floor in [project].dependencies, where it
+    # would install click for runtime users who no longer need it.
+    "click>=8.2",
+]
+lint = [
+    "ruff",
+    "vulture",
+    "typos",
+]
+types = [
+    "mypy",
+    # [tool.mypy].files includes "tests", and the test modules import pytest
+    # and typer.testing. Without them installed, mypy reports
+    # `Cannot find implementation or library stub for module named "pytest"`
+    # and the types leg fails for a reason that has nothing to do with types.
+    {include-group = "test"},
+]
+release = [
+    "brassy",
+    "commitizen",
+]
+dev = [
+    {include-group = "test"},
+    {include-group = "lint"},
+    {include-group = "types"},
+    {include-group = "release"},
 ]
 
-[tool.poetry.scripts]
-# project_cli = "project.cli:main"
+# ---------------------------------------------------------------------------
+# hatchling
+# ---------------------------------------------------------------------------
+[tool.hatch.build.targets.wheel]
+packages = ["src/gwarchive"]
+# py.typed needs no declaration: hatchling ships every file under `packages`.
 
-[tool.poetry.urls]
-Homepage = "https://github.com/biosafetylvl5/PROJECT"
-Issues = "https://github.com/biosafetylvl5/PROJECT/issues"
-Documentation = "https://biosafetylvl5.github.io/PROJECT/"
+[tool.hatch.build.targets.sdist]
+# Named explicitly, and this is not tidiness. Hatchling's default sdist ships
+# everything the VCS does not ignore, which here includes the repo's own
+# .gwarchive-offload.json -- a real tombstone carrying a private remote host
+# name in its `remotes` list. An allowlist cannot leak a file nobody listed.
+include = [
+    "/src",
+    "/tests",
+    "/scripts",
+    "/docs",
+    "/README.md",
+    "/.ruff.toml",
+    "/uv.lock",
+]
 
+# ---------------------------------------------------------------------------
+# mypy. Folded in from mypy.ini, which is deleted in the same commit: leaving
+# both would make this table silently dead, because mypy reads mypy.ini first
+# and never looks here.
+# ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
+>>>>>>> c664cdf (build: package gwarchive with hatchling and uv)
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+<<<<<<< HEAD
 check_untyped_defs = true
 disallow_untyped_decorators = true
 no_implicit_optional = true
@@ -219,3 +296,169 @@ build-backend = "poetry.core.masonry.api"
 name = "cz_conventional_commits"
 tag_format = "v$version"
 version_provider = "poetry"
+=======
+no_implicit_optional = true
+warn_unreachable = true
+
+# New here, not carried over from mypy.ini:
+#
+# `files` means a bare `uv run mypy` checks the right thing, and it brings
+# tests/ under disallow_untyped_defs -- which forces every monkeypatch
+# stand-in to be annotated, fixing for free the signature-drift concern
+# .ruff.toml raises when it declines ARG.
+# "g.py" is here TEMPORARILY, for the strangle window. Without it mypy would
+# typecheck a shrinking shim and ignore the 3,000 lines actually being moved,
+# reporting green for fifteen commits. Drop it in the commit that deletes g.py.
+files = ["src", "tests", "g.py"]
+# `warn_unused_ignores` catches a `# type: ignore` that its error moved out
+# from under during the split. That is exactly the residue a split creates,
+# and it is invisible without this.
+warn_unused_ignores = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+# Valid from the commit that introduces this file: the suite is moved into
+# tests/ in that same commit. Setting it while tests/ does not yet exist
+# collects zero tests and makes the per-commit gate vacuous.
+testpaths = ["tests"]
+# TEMPORARY, for the strangle window only. tests/test_g.py still does
+# `import g`, and g.py sits at the repo root -- which pytest does not put on
+# sys.path once the tests live in tests/. This is NOT the forbidden
+# `pythonpath = ["src"]`: that one would let a broken [project] table pass CI by
+# making the package importable without being installed. This one exposes a
+# single root-level module that is on its way out. Delete this line in the
+# commit that deletes g.py.
+pythonpath = ["."]
+# --import-mode=importlib: the split gives tests/ nested directories with
+# duplicate basenames (tests/commands/test_stats.py beside tests/test_stats.py
+# would collide under the default prepend mode, which needs globally unique
+# basenames).
+# --strict-markers, --strict-config: a typo in a marker or in this table is an
+# error, not a silent no-op.
+addopts = "--import-mode=importlib --strict-markers --strict-config"
+xfail_strict = true
+# Deliberately NO `pythonpath = ["src"]`. It would put src/ on sys.path
+# directly, so the suite would pass even if [project] or the build backend
+# config were broken and `gwarchive` were not actually installable. The tests
+# import the installed package, which is the thing users get.
+
+# ---------------------------------------------------------------------------
+# commitizen
+# ---------------------------------------------------------------------------
+[tool.commitizen]
+name = "cz_conventional_commits"
+# Reads [project].version above -- see the note on the static version.
+version_provider = "pep621"
+# An anchored textual replace, so `__version__ = "0.3.0"` must stay on one
+# line with no computation for this to find it.
+version_files = ["src/gwarchive/__init__.py:__version__"]
+# Decide this before the first tag: changing it later rewrites every tag.
+tag_format = "v$version"
+annotated_tag = true
+# At 0.x a BREAKING CHANGE bumps the minor: 0.3.0 -> 0.4.0, not 1.0.0.
+major_version_zero = true
+# Release notes come from brassy, not `cz changelog`, and no changelog_* keys
+# are set. This is explicit so nobody "fixes" it back on: the two answer
+# different questions, and here that matters concretely -- the git history is
+# being manufactured, so `cz changelog` would render "0.3.0: split g.py into
+# modules, add pyproject, add CI", describing a release in which nothing
+# observable changed except the command name.
+update_changelog_on_bump = false
+
+# ---------------------------------------------------------------------------
+# vulture
+# ---------------------------------------------------------------------------
+[tool.vulture]
+# 60 is the unused-FUNCTION band, and it is the only band that earns its keep.
+# Measured on this codebase: 60 -> 52 findings, 80 -> 30, and every one of the
+# 30 is an unused pytest-fixture *parameter* reported at 100% confidence (not
+# an unused import -- there are none; ruff F401 agrees). ruff's ARG rules cover
+# that band more precisely anyway: ARG001 finds 58 where vulture finds 30.
+#
+# Be honest about what 60 buys today: 22 findings, 22 false positives, zero
+# genuinely dead functions. Its value is prospective -- it is the only tool in
+# the stack that will catch a helper stranded by the split itself. Run it with
+# continue-on-error until the last extraction lands; a detector that is red for
+# fifteen commits teaches people to ignore red.
+#
+# vulture reads this table from the CURRENT WORKING DIRECTORY only -- it does
+# not walk up the tree. Run from one directory below and the config is ignored
+# in silence and all 52 findings come back. So: run it from the repo root, and
+# `paths` is pinned here so `uv run vulture` needs no arguments at all.
+min_confidence = 60
+paths = ["src", "tests"]
+sort_by_size = true
+
+# fnmatch, applied to the decorator's dotted callable ONLY -- vulture strips
+# the call arguments before matching, so "@app.command" matches @app.command(),
+# @app.command("list") and @app.command("shell-init") alike. Do NOT write
+# "@app.command()" or "@app.command(*)": both match nothing, and they fail
+# SILENTLY -- no error, no warning, just zero suppression.
+#
+# This only works while the commands are registered with an applied decorator.
+# If commands/<group>.py's `register(app)` ever switches to
+# `app.command(...)(fn)`, ignore_decorators stops matching entirely and all 18
+# commands fire again with no suppression available except 18 literal names --
+# which on its own blows the ~10-entry kill criterion.
+ignore_decorators = ["@app.command", "@app.callback", "@pytest.fixture"]
+
+# Fixture parameters a test requests for its side effect and never reads, one
+# attribute assignment onto a stdlib tarfile.TarInfo, and two members of
+# monkeypatch stand-ins that exist to satisfy an external contract rather than
+# to be read here: `capture_output` on the _fake_run stand-ins (it must match
+# run_rclone's real signature -- .ruff.toml records the same reason for
+# declining ARG), and `free` on the NoRoom class standing in for the
+# shutil.disk_usage result, which production code reads as `.free`.
+ignore_names = ["duplicates", "stray", "gzip_codec", "linkname", "capture_output", "free"]
+
+# Seven suppressions for a clean run, against a ~10 kill criterion. This is
+# also why there is no whitelist.py: `vulture --make-whitelist` emits 52 lines
+# for the same job and must be regenerated whenever line numbers move, while
+# this table is name-based and survives code motion. Verified not to blind the
+# tool: with this table in force, an uncalled helper added to a module is still
+# reported.
+
+# ---------------------------------------------------------------------------
+# typos. Report-only, always: never add `typos -w` and never add a typos
+# pre-commit hook. `.gwarchive-offload.json`, `.gwarchive-*`, `tool_version`,
+# `offloaded_at` and `member_count` are on-disk wire format. An auto-"fix" to
+# one of those literals makes _reserved_member stop matching, and the next
+# --no-compress push uploads the `.gwarchive-*` namespace -- a bug this tool
+# has already shipped once.
+# ---------------------------------------------------------------------------
+[tool.typos.default.extend-identifiers]
+# Measured, not predicted: a bare run over this repo is NOT clean. It reports
+# exactly two findings, exit 2, both on `Alph` in the --exact find test, where
+# the string is a deliberate 4-character prefix of "Alpha" whose entire purpose
+# is to be a partial match that `--exact` must reject. "Correcting" it deletes
+# the test.
+#
+# extend-identifiers, not extend-words: this matches the whole identifier and
+# is case-sensitive, so a genuine future `alph` or `AlphaHelper` still fires.
+# extend-words would silence all of those at once.
+#
+# Two lines is the whole config. The 17 domain words that looked like they
+# would need an allowlist -- gwarchive, mksub, oldify, PRMAO, zstd, rclone,
+# pokeget, bulbasaur, iterdir, copytree, hatchling, brassy, vulture, tombstone,
+# offload, typer, pyproject -- were each run through typos in isolation, as
+# real Python identifiers, and as Markdown prose. None of them fire.
+#
+# This table must stay in pyproject.toml alone. A _typos.toml, typos.toml or
+# .typos.toml beside it does not merge -- it REPLACES this table outright, and
+# the key prefix differs between the two homes (`tool.typos.` here, bare
+# `default.` there), so a copied snippet silently does nothing.
+Alph = "Alph"
+
+# Hidden paths are skipped by default, and that decision is left as-is:
+# .github/workflows/*.yaml, .ruff.toml, .pre-commit-config.yaml and .actrc are
+# NOT spell-checked. To change that, uncomment the block below -- and note that
+# `ignore-hidden = false` alone is a trap, because it makes typos read
+# .git/objects/ and report on a compressed blob. The exclude is what makes it
+# usable.
+#
+# [tool.typos.files]
+# extend-exclude = [".git/"]
+# ignore-hidden = false
+>>>>>>> c664cdf (build: package gwarchive with hatchling and uv)
