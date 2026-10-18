@@ -20,8 +20,11 @@ words:
   - docstrings
   - Dunder
   - esbenp
+  - Forgejo
   - geoips
   - gethostname
+  - gitea
+  - gitrepo
   - groupindex
   - himawari
   - IODC
@@ -32,8 +35,8 @@ words:
   - mccabe
   - Meso
   - meteosat
-  - mypy
   - Mypy
+  - mypy
   - newhost
   - newplatform
   - njpwerner
@@ -68,6 +71,7 @@ words:
   - Uttmark
   - viewcode
   - workpath
+  - worktrees
   - xarray
   - yday
   # Project, stdlib and tooling vocabulary.
