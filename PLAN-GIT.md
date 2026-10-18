@@ -34,6 +34,16 @@ same selectors as `push`: a category letter, a prefix, or a path.
   supports `--dry-run` (with the same output shape), `--json`, `--force`
   and `--wip`.
 
+- Both take `--recent N`: only the N repositories with the latest
+  activity, meaning the newer of their last commit and the newest file in
+  the working tree (`.git` and ignored files not counted). This is the
+  rollout path: `g git status --recent 10`, then `g git push --recent 10`,
+  then push others one at a time (`g git push PATH`) as they are worked
+  on. `status` sorts by that time and shows it.
+
+- Nothing is skipped by default. Every repository found is pushed unless
+  it was excluded.
+
 - `g git exclude PATH` / `--undo` marks a repository to skip
   (`git config gwarchive.git.skip true` in that repository, so the mark
   travels with it).
@@ -81,7 +91,8 @@ helper).
 - **Never forced by default.** A branch that has diverged is reported,
   and the run exits 1. `--force` overwrites diverged branches after the
   same confirmation as other destructive commands (`--yes` to skip it).
-- **`--wip`:** uncommitted work is saved without touching the working tree
+- **`--wip`** is opt-in, chosen repository by repository, and never on by
+  default or with `--recent`. Uncommitted work is saved without touching the working tree
   or index. `git stash create` makes the commit (and `git add -A` into a
   temporary index covers untracked files), which is pushed to
   `wip/<hostname>`, overwritten each run.
@@ -125,6 +136,8 @@ Following AGENTS.md's two rules:
 that records calls. Cases:
 
 - naming: root, nested, subfolder, long and odd paths;
+- `--recent`: ordering by commit time and by working-tree time, ties
+  broken by path, and N larger than the count;
 - skipping: excluded, already-there, tombstoned;
 - create once (idempotent);
 - a diverged branch is refused without `--force`;
