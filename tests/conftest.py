@@ -8,6 +8,7 @@ command that forgets ``--path`` still cannot reach the real ~/gwarchive.
 """
 
 import io
+import os
 import shutil
 import subprocess
 import tarfile
@@ -25,6 +26,11 @@ runner = CliRunner()
 @pytest.fixture(autouse=True)
 def isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Never let a test touch the user's real archive."""
+    # Every GWARCHIVE_* setting comes from the developer's shell otherwise --
+    # a remote, compression, a git server -- so they are cleared by prefix, not
+    # by a list that each new variable has to remember to join.
+    for name in [n for n in os.environ if n.startswith("GWARCHIVE_")]:
+        monkeypatch.delenv(name)
     monkeypatch.setenv("GWARCHIVE_BASE", str(tmp_path / "safety-net"))
     monkeypatch.setenv("COLUMNS", "200")
     monkeypatch.setenv("TERM", "dumb")
@@ -34,10 +40,6 @@ def isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # they are read, or the reset writes a different module's names.
     monkeypatch.setattr(output, "QUIET", False)
     monkeypatch.setattr(output, "VERBOSE", False)
-    # Compression settings come from the environment too, so a developer's own
-    # shell must not decide what the transfer tests exercise.
-    for name in ("GWARCHIVE_COMPRESS", "GWARCHIVE_CODEC", "GWARCHIVE_KEEP"):
-        monkeypatch.delenv(name, raising=False)
 
 
 def run(*args: object, input: str | None = None) -> Result:  # noqa: A002
