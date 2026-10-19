@@ -178,6 +178,18 @@ def hashed_name(name: str, rel: str) -> str:
     return f"{name[: MAX_NAME - 9]}-{digest}"
 
 
+def holds_prefix(name: str, prefix: str) -> bool:
+    """Whether a name was made from ``prefix``: as computed, or hashed.
+
+    A hashed root-level name is ``p0001-1a2b3c4d``, with no ``--`` to split on.
+    """
+    return (
+        name == prefix
+        or name.startswith(f"{prefix}--")
+        or re.fullmatch(rf"{re.escape(prefix)}-[0-9a-f]{{8}}", name) is not None
+    )
+
+
 def description_for(folder: Path, rel: str) -> str:
     return f"{DESCRIPTION_HEAD}{folder.name} / {rel}"
 
@@ -290,7 +302,10 @@ def discover(folder: Path, cfg: GitConfig) -> list[Repo]:
         repo = Repo(path, rel, common, bare, config=_read_config(path))
         repos.append(repo)
         skip = git_bool(repo.first("gwarchive.git.skip"))
-        is_submodule = "modules" in git_dir.parts and ".git" in git_dir.parts and git_dir != common
+        # A submodule's git dir and common dir are one and the same, both under
+        # an ancestor's .git/modules/; only a worktree has the two differ.
+        parts = git_dir.parts
+        is_submodule = ".git" in parts and "modules" in parts[parts.index(".git") :]
         if is_submodule:
             if skip is not False:
                 repo.skipped = "submodule (opt in with gwarchive.git.skip=false)"
@@ -354,7 +369,7 @@ def _stored_name(repo: Repo, folder: Path, owner: str) -> None:
         repo.error = f"stored name {stored} is under another owner than {owner}"
         repo.fixes.append(_unset_fix(repo))
         return
-    if name.split("--")[0] not in _ancestor_prefixes(repo, folder):
+    if not any(holds_prefix(name, pfx) for pfx in _ancestor_prefixes(repo, folder)):
         repo.error = (
             f"stored name {stored} belongs to another folder's prefix: this looks like a copy "
             "(cp keeps .git/config but allocates a fresh prefix)"

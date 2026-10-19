@@ -443,18 +443,17 @@ def test_behind_exits_0(archive: Path, alpha: Path, server: Server, remote: Path
 def test_a_commit_made_after_preflight_is_not_pushed(
     archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from gwarchive import gitrepo
-
     tool = alpha / "src" / "tool"
     first = git(tool, "rev-parse", "HEAD")
-    real = gitrepo.preflight
+    real = external.run_git
 
-    def then_commit(*args: object, **kwargs: object) -> gitrepo.GitRun:
-        out = real(*args, **kwargs)  # type: ignore[arg-type]
-        commit(tool, "late")
-        return out
+    def commit_then_push(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        # The last moment: pre-flight is done and `git push` is about to run.
+        if "push" in args and git(tool, "log", "--format=%s", "-1") != "late":
+            commit(tool, "late")
+        return real(args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(gitrepo, "preflight", then_commit)
+    monkeypatch.setattr(external, "run_git", commit_then_push)
     assert push_json(archive, remote)[0] == 0
     assert server.refs("p0001--src--tool")["refs/heads/main"] == first
 
@@ -627,9 +626,7 @@ def test_a_stored_name_whose_repository_is_gone_is_created_again(
 # --- skipping -----------------------------------------------------------------------------
 
 
-def test_skip_config_submodules_and_already_there(
-    archive: Path, alpha: Path, server: Server, remote: Path
-) -> None:
+def test_skip_config_and_already_there(archive: Path, alpha: Path, server: Server, remote: Path) -> None:
     skipped = make_repo(alpha / "skipped")
     git(skipped, "config", "gwarchive.git.skip", "true")
     there = make_repo(alpha / "there")
@@ -640,6 +637,42 @@ def test_skip_config_submodules_and_already_there(
     assert by_path["skipped"]["skipped"] == "gwarchive.git.skip is set"
     assert str(by_path["there"]["skipped"]).startswith("already there")
     assert by_path["src/tool"]["skipped"] is None
+    res = run("--verbose", "push", "P1", "--remote", remote, "--dry-run", "--path", archive)
+    assert f'undo: git -C "{skipped}" config --unset gwarchive.git.skip' in res.stdout
+
+
+def test_a_submodule_is_skipped_until_it_opts_in(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path
+) -> None:
+    lib = make_repo(tmp_path / "lib")
+    top = make_repo(alpha / "top")
+    git(top, "-c", "protocol.file.allow=always", "submodule", "add", "-q", f"file://{lib}", "sub")
+    git(top, "commit", "-q", "-m", "sub")
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    by_path = {r["path"]: r for r in repos_of(entry)}
+    assert str(by_path["top/sub"]["skipped"]).startswith("submodule")
+    assert "p0001--top--sub" not in server.repos
+    git(top / "sub", "config", "gwarchive.git.skip", "false")
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    assert "p0001--top--sub" in server.repos
+
+
+def test_a_hashed_root_name_is_accepted_on_every_later_run(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    make_repo(alpha)
+    server.repos["p0001"] = {"name": "p0001", "topics": [], "description": "someone else's"}
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    (root,) = [r for r in repos_of(entry) if r["path"] == "."]
+    name = str(root["repo"])
+    assert name.startswith("lab/p0001-") and "--" not in name
+    assert git(alpha, "config", "gwarchive.git.repo") == name
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 0, err
+    assert run("verify", "--path", archive).exit_code == 0
 
 
 # --- offload ------------------------------------------------------------------------------

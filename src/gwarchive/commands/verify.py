@@ -27,6 +27,7 @@ from gwarchive import clock, external, forge, output
 from gwarchive.destination import (
     run_fs,
 )
+from gwarchive.gitrepo import holds_prefix
 from gwarchive.naming import (
     CATEGORIES,
     CATEGORY_NAMES,
@@ -384,7 +385,7 @@ def collect_git_issues(base_path: Path) -> Iterator[Issue]:
             stored = proc.stdout.strip() if proc.returncode == 0 else ""
             own = (folder_prefix(folder.name) or "").lower()
             name = stored.partition("/")[2]
-            if stored and own and name.split("--")[0] != own:
+            if stored and own and not holds_prefix(name, own):
                 yield Issue(
                     "Git server",
                     f"{shown}'s repository has the stored name {stored}, from another folder's prefix "

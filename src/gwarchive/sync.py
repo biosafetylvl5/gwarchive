@@ -604,6 +604,8 @@ def git_repo_lines(run: GitRun | None, folder: Path, *, retry: str, dry_run: boo
         if repo.skipped:
             if not as_json:
                 detail(f"{label}: skipped -- {repo.skipped}")
+                if gitrepo.git_bool(repo.first("gwarchive.git.skip")):
+                    detail(f'  undo: git -C "{repo.path}" config --unset gwarchive.git.skip')
             continue
         if repo.error:
             warn(f"{label}: {repo.error}")
