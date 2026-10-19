@@ -626,7 +626,9 @@ def preflight(
         if len(holders) > 1:
             for repo in holders:
                 if repo.stored:
-                    repo.error = f"{len(holders)} repositories in this run share the stored name {name}"
+                    repo.error = (
+                        f"{len(holders)} repositories in this run share the stored name {cfg.owner}/{name}"
+                    )
                     repo.fixes.append(_unset_fix(repo))
     for fg in run.folders.values():
         for repo in fg.active():

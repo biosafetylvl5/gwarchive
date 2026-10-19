@@ -1019,3 +1019,334 @@ def test_restore_names_the_server_copies(
     assert res.exit_code == 0
     assert "Also on https://git.example.org as of" in res.stdout
     assert "lab/p0001--src--tool" in res.stdout
+
+
+# --- naming -------------------------------------------------------------------------------
+
+
+def by_path(entry: dict[str, object]) -> dict[str, dict[str, object]]:
+    return {str(r["path"]): r for r in repos_of(entry)}
+
+
+def test_a_name_past_the_limit_is_cut_and_hashed(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    make_repo(alpha / ("x" * 120))
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    name = str(by_path(entry)["x" * 120]["repo"]).removeprefix("lab/")
+    assert len(name) <= 100
+    assert name.startswith("p0001--xxx") and name[-9] == "-" and int(name[-8:], 16) >= 0
+    assert name in server.repos
+
+
+def test_two_paths_with_one_computed_name_get_two_repositories(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    make_repo(alpha / "a" / "b")
+    make_repo(alpha / "a--b")
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    names = {str(by_path(entry)[p]["repo"]) for p in ("a/b", "a--b")}
+    assert len(names) == 2
+    assert "lab/p0001--a--b" in names
+    assert all(n.removeprefix("lab/") in server.repos for n in names)
+
+
+def test_a_name_taken_by_a_foreign_repository_is_hashed(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    server.repos["p0001--src--tool"] = {"name": "p0001--src--tool", "topics": [], "description": "theirs"}
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    name = str(by_path(entry)["src/tool"]["repo"])
+    assert name.startswith("lab/p0001--src--tool-") and name != "lab/p0001--src--tool"
+    assert server.repos["p0001--src--tool"]["description"] == "theirs"
+
+
+def test_moving_a_repository_inside_the_folder_keeps_its_name_and_updates_the_description(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    assert push_json(archive, remote)[0] == 0
+    (alpha / "lib").mkdir()
+    (alpha / "src" / "tool").rename(alpha / "lib" / "tool")
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    assert by_path(entry)["lib/tool"]["repo"] == "lab/p0001--src--tool"
+    assert str(server.repos["p0001--src--tool"]["description"]).endswith(" / lib/tool")
+    assert set(server.repos) == {"p0001--src--tool"}
+
+
+def test_renaming_the_folder_keeps_every_name(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    assert push_json(archive, remote)[0] == 0
+    beta = alpha.with_name("P0001 Beta")
+    alpha.rename(beta)
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 0, err
+    assert by_path(entry)["src/tool"]["repo"] == "lab/p0001--src--tool"
+    assert set(server.repos) == {"p0001--src--tool"}
+    assert server.repos["p0001--src--tool"]["description"] == "gwarchive: P0001 Beta / src/tool"
+
+
+def test_two_repositories_with_one_stored_name_are_both_errors(
+    archive: Path, alpha: Path, server: Server, remote: Path, rclone_local: list[list[str]]
+) -> None:
+    import shutil
+
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    first = commit(tool, "after")
+    shutil.copytree(tool, alpha / "src" / "copy")
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 1
+    repos = by_path(entry)
+    assert repos["src/tool"]["error"] and repos["src/copy"]["error"]
+    assert "share the stored name lab/p0001--src--tool" in err
+    assert server.refs("p0001--src--tool")["refs/heads/main"] != first
+    res = run("offload", "P1", "--remote", remote, "--yes", "--path", archive)
+    assert res.exit_code == 1
+    assert "config --unset gwarchive.git.repo" in res.stderr
+    assert (tool / "README").exists()
+    git(alpha / "src" / "copy", "config", "--unset", "gwarchive.git.repo")
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    assert by_path(entry)["src/copy"]["repo"] == "lab/p0001--src--copy"
+    assert server.refs("p0001--src--tool")["refs/heads/main"] == first
+
+
+def test_a_stored_name_from_another_prefix_refuses_only_that_repository(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    other = make_repo(alpha / "other")
+    git(other, "config", "gwarchive.git.repo", "lab/p0009--other")
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 1
+    assert "belongs to another folder's prefix" in err
+    assert by_path(entry)["src/tool"]["error"] is None
+    assert "p0001--src--tool" in server.repos and "p0009--other" not in server.repos
+
+
+def test_a_redirected_name_is_an_error_naming_the_new_one(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert push_json(archive, remote)[0] == 0
+    real = server.request
+
+    def renamed(method: str, url: str, **kwargs: object) -> forge.Reply:
+        if method == "GET" and url.endswith("/repos/lab/p0001--src--tool"):
+            return forge.Reply(301, None, "https://git.example.org/api/v1/repos/lab/renamed")
+        return real(method, url, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(forge, "request", renamed)
+    code, _, err = push_json(archive, remote)
+    assert code == 1
+    assert "was renamed on the server to lab/renamed" in err
+    assert "config gwarchive.git.repo lab/renamed" in err
+
+
+# --- skipping, continued ------------------------------------------------------------------
+
+
+def test_a_stored_name_is_pushed_even_with_a_remote_on_the_server(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    git(tool, "remote", "add", "copy", "https://git.example.org/lab/p0001--src--tool.git")
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    assert by_path(entry)["src/tool"]["skipped"] is None
+
+
+def test_worktrees_are_skipped_inside_and_outside_the_folder(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path
+) -> None:
+    tool = alpha / "src" / "tool"
+    git(tool, "worktree", "add", "-q", str(alpha / "wt"))
+    outside = make_repo(tmp_path / "outside")
+    git(outside, "worktree", "add", "-q", str(alpha / "wt2"))
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    repos = by_path(entry)
+    assert repos["wt"]["skipped"] == "worktree of src/tool"
+    assert repos["wt2"]["skipped"] == "worktree whose repository is outside this folder"
+    assert set(server.repos) == {"p0001--src--tool"}
+
+
+def test_skipped_repositories_do_not_block_offload(
+    archive: Path, alpha: Path, server: Server, remote: Path, gzip_codec: None
+) -> None:
+    git(make_repo(alpha / "skipped"), "config", "gwarchive.git.skip", "true")
+    res = run("offload", "P1", "--remote", remote, "--yes", "--json", "--path", archive)
+    assert res.exit_code == 0, res.stderr
+    assert json.loads(res.stdout)[0]["offloaded"] is True
+
+
+# --- refs, continued ----------------------------------------------------------------------
+
+
+def test_a_diverged_branch_is_refused_and_named(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path
+) -> None:
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    theirs = _diverge(server, tool, tmp_path)
+    git(tool, "fetch", "-q", str(server.bare("p0001--src--tool")), "main")
+    commit(tool, "mine")
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 1
+    (ref,) = [r for r in refs_of(by_path(entry)["src/tool"]) if r["ref"] == "refs/heads/main"]
+    assert (ref["state"], ref["action"]) == ("diverged", "refused")
+    assert "diverged main" in err and " fetch " not in err
+    assert server.refs("p0001--src--tool")["refs/heads/main"] == theirs
+
+
+def test_a_moved_tag_is_refused(archive: Path, alpha: Path, server: Server, remote: Path) -> None:
+    tool = alpha / "src" / "tool"
+    git(tool, "tag", "v1")
+    assert push_json(archive, remote)[0] == 0
+    old = server.refs("p0001--src--tool")["refs/tags/v1"]
+    commit(tool, "later")
+    git(tool, "tag", "-f", "v1")
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 1
+    (ref,) = [r for r in refs_of(by_path(entry)["src/tool"]) if r["ref"] == "refs/tags/v1"]
+    assert (ref["state"], ref["action"]) == ("tag moved", "refused")
+    assert server.refs("p0001--src--tool")["refs/tags/v1"] == old
+
+
+def test_a_branch_deleted_locally_stays_on_the_server(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    tool = alpha / "src" / "tool"
+    git(tool, "branch", "feature")
+    assert push_json(archive, remote)[0] == 0
+    git(tool, "branch", "-D", "feature")
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 0
+    (ref,) = [r for r in refs_of(by_path(entry)["src/tool"]) if r["ref"] == "refs/heads/feature"]
+    assert ref["state"] == "server-only"
+    assert "refs/heads/feature" in server.refs("p0001--src--tool")
+
+
+def test_force_git_with_nothing_refused_never_prompts(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    res = run("push", "P1", "--remote", remote, "--force-git", "--path", archive, input="")
+    assert res.exit_code == 0, res.stderr
+    assert "?" not in res.stdout
+
+
+def test_https_auth_failure_suggests_ssh_through_gwarchive_gitea_git(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = external.run_git
+
+    def denied(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "ls-remote" in args:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: Authentication failed for 'https://…'")
+        return real(args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(external, "run_git", denied)
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 1
+    assert "export GWARCHIVE_GITEA_GIT='ssh://" in err
+    assert entry["remotes"]
+
+
+# --- --wip, continued ---------------------------------------------------------------------
+
+
+def test_wip_works_from_a_detached_head(archive: Path, alpha: Path, server: Server, remote: Path) -> None:
+    tool = alpha / "src" / "tool"
+    git(tool, "checkout", "-q", "--detach")
+    (tool / "README").write_text("dirty\n")
+    code, (entry,), _ = push_json(archive, remote, "--wip")
+    assert code == 0
+    wip = str(by_path(entry)["src/tool"]["wip"])
+    sha = server.refs("p0001--src--tool")[f"refs/heads/{wip}"]
+    assert git(server.bare("p0001--src--tool"), "show", f"{sha}:README") == "dirty"
+
+
+def test_wip_leaves_another_hosts_wip_branch_alone(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path
+) -> None:
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    other = tmp_path / "elsewhere"
+    git(tmp_path, "clone", "-q", str(server.bare("p0001--src--tool")), str(other))
+    theirs = commit(other, "their wip")
+    git(other, "push", "-q", "origin", "HEAD:refs/heads/wip/other-host")
+    (tool / "README").write_text("dirty\n")
+    code, (entry,), _ = push_json(archive, remote, "--wip")
+    assert code == 0
+    assert server.refs("p0001--src--tool")["refs/heads/wip/other-host"] == theirs
+
+
+def test_the_wip_index_is_removed_when_commit_tree_fails(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    tool = alpha / "src" / "tool"
+    (tool / "README").write_text("dirty\n")
+    real = external.run_git
+    seen: list[bool] = []
+
+    def failing_commit_tree(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "commit-tree" in args:
+            seen.append(any(scratch in Path(p).parents for p in scratch.glob("gwarchive-index-*/index")))
+            return subprocess.CompletedProcess(args, 128, "", "fatal: nope")
+        return real(args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(external, "run_git", failing_commit_tree)
+    code, _, err = push_json(archive, remote, "--wip")
+    assert code == 1
+    assert seen == [True]
+    assert "could not build the --wip commit" in err
+    assert list(scratch.iterdir()) == []
+    assert [p.name for p in (tool / ".git").glob("*index*")] == ["index"]
+
+
+# --- output, continued --------------------------------------------------------------------
+
+
+def test_refused_lines_survive_quiet(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path
+) -> None:
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    _diverge(server, tool, tmp_path)
+    commit(tool, "mine")
+    res = run("--quiet", "push", "P1", "--remote", remote, "--path", archive)
+    assert res.exit_code == 1
+    assert "unknown main" in res.stderr
+    assert "try:" in res.stderr
+
+
+def test_a_batch_ends_with_one_summary_line(archive: Path, alpha: Path, server: Server, remote: Path) -> None:
+    assert run("create", "P", "Beta", "--path", archive).exit_code == 0
+    make_repo(archive / "Project" / "P0002 Beta")
+    res = run("push", "P", "--remote", remote, "--path", archive)
+    assert res.exit_code == 0, res.stderr
+    assert "git: 2 repositories in 2 folders: 2 pushed, 2 created" in res.stdout
+    assert res.stdout.count("git: 2 repositories") == 1
+
+
+def test_push_on_offloaded_leftovers_dies_before_any_git_write(
+    archive: Path, alpha: Path, server: Server, remote: Path, gzip_codec: None
+) -> None:
+    assert run("offload", "P1", "--remote", remote, "--yes", "--path", archive).exit_code == 0
+    make_repo(alpha / "late")
+    server.calls.clear()
+    res = run("push", "P1", "--remote", remote, "--path", archive)
+    assert res.exit_code == 1
+    assert server.writes() == []
+    assert "p0001--late" not in server.repos
+    stored = subprocess.run(["git", "config", "--get", "gwarchive.git.repo"], cwd=alpha / "late", check=False)
+    assert stored.returncode == 1
