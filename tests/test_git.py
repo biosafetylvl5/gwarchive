@@ -1350,3 +1350,206 @@ def test_push_on_offloaded_leftovers_dies_before_any_git_write(
     assert "p0001--late" not in server.repos
     stored = subprocess.run(["git", "config", "--get", "gwarchive.git.repo"], cwd=alpha / "late", check=False)
     assert stored.returncode == 1
+
+
+# --- --wip, the rest ----------------------------------------------------------------------
+
+
+def test_untracked_files_are_capped_at_10_in_the_receipt_and_complete_in_json(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    tool = alpha / "src" / "tool"
+    names = [f"new{i:02}.txt" for i in range(12)]
+    for name in names:
+        (tool / name).write_text("x\n")
+    code, (entry,), _ = push_json(archive, remote, "--dry-run", "--wip")
+    assert code == 0
+    assert by_path(entry)["src/tool"]["untracked_included"] == names
+    res = run("push", "P1", "--remote", remote, "--wip", "--path", archive)
+    assert res.exit_code == 0, res.stderr
+    assert "new09.txt" in res.stdout and "new10.txt" not in res.stdout
+    assert "(+2 more)" in res.stdout
+
+
+def test_a_second_wip_run_replaces_the_branch_without_a_prompt(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    tool = alpha / "src" / "tool"
+    (tool / "README").write_text("first\n")
+    code, (entry,), _ = push_json(archive, remote, "--wip")
+    assert code == 0
+    ref = f"refs/heads/{by_path(entry)['src/tool']['wip']}"
+    first = server.refs("p0001--src--tool")[ref]
+    (tool / "README").write_text("second\n")
+    res = run("push", "P1", "--remote", remote, "--wip", "--path", archive, input="")
+    assert res.exit_code == 0, res.stderr
+    second = server.refs("p0001--src--tool")[ref]
+    assert second != first
+    assert git(server.bare("p0001--src--tool"), "show", f"{second}:README") == "second"
+
+
+def test_without_wip_a_dirty_repository_is_named_in_the_offload_log(
+    archive: Path, alpha: Path, server: Server, remote: Path, gzip_codec: None
+) -> None:
+    (alpha / "src" / "tool" / "README").write_text("dirty\n")
+    res = run("offload", "P1", "--remote", remote, "--yes", "--path", archive)
+    assert res.exit_code == 0, res.stderr
+    assert "has uncommitted changes" in res.stderr and "add --wip" in res.stderr
+
+
+# --- timeouts and ssh ---------------------------------------------------------------------
+
+
+def spy_git(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], dict[str, object]]]:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    real = external.run_git
+
+    def spy(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((list(args), kwargs))
+        return real(args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(external, "run_git", spy)
+    return calls
+
+
+def test_only_network_commands_are_bounded_and_pushes_get_a_stall_limit(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GWARCHIVE_GITEA_TIMEOUT", "7")
+    calls = spy_git(monkeypatch)
+    assert push_json(archive, remote)[0] == 0
+    for args, kwargs in calls:
+        if "ls-remote" in args:
+            assert kwargs.get("timeout") == 7
+        else:
+            assert kwargs.get("timeout") is None, args
+    (push,) = [args for args, _ in calls if "push" in args]
+    assert "http.lowSpeedTime=7" in push
+
+
+def test_an_unattended_run_never_waits_for_an_ssh_prompt(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = spy_git(monkeypatch)
+    assert push_json(archive, remote)[0] == 0
+    network = [kw for args, kw in calls if "ls-remote" in args or "push" in args]
+    assert network
+    for kwargs in network:
+        env = kwargs.get("env")
+        assert isinstance(env, dict) and "-o BatchMode=yes" in env["GIT_SSH_COMMAND"]
+
+
+def test_a_users_own_ssh_command_is_left_alone(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i ~/.ssh/archive")
+    calls = spy_git(monkeypatch)
+    assert push_json(archive, remote)[0] == 0
+    assert all(not kw.get("env") for args, kw in calls if "ls-remote" in args or "push" in args)
+
+
+# --- soft failures, continued -------------------------------------------------------------
+
+
+def test_an_api_timeout_on_one_repository_leaves_the_others_pushed(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_repo(alpha / "lib")
+    real = server.request
+
+    def slow(method: str, url: str, **kwargs: object) -> forge.Reply:
+        if url.endswith("/repos/lab/p0001--lib"):
+            raise forge.ForgeError("the git server did not answer within 60 seconds")
+        return real(method, url, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(forge, "request", slow)
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 1
+    assert "did not answer within 60 seconds" in err
+    assert by_path(entry)["lib"]["error"]
+    assert by_path(entry)["src/tool"]["error"] is None
+    assert "refs/heads/main" in server.refs("p0001--src--tool")
+    assert entry["remotes"]
+
+
+def test_a_ref_missing_on_read_back_is_an_error(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert push_json(archive, remote)[0] == 0
+    commit(alpha / "src" / "tool", "later")
+    real = external.run_git
+    pushed: list[bool] = []
+
+    def forgetful(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        proc = real(args, **kwargs)  # type: ignore[arg-type]
+        if "push" in args:
+            pushed.append(True)
+        elif "ls-remote" in args and pushed:
+            # The read-back: the server reports main as never updated.
+            kept = [line for line in proc.stdout.splitlines() if not line.endswith("refs/heads/main")]
+            return subprocess.CompletedProcess(args, 0, "\n".join(kept), "")
+        return proc
+
+    monkeypatch.setattr(external, "run_git", forgetful)
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 1
+    assert pushed
+    assert "read-back: the server does not hold what was pushed for refs/heads/main" in err
+    assert by_path(entry)["src/tool"]["error"]
+
+
+def test_no_git_and_no_server_both_keep_the_previous_record(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert push_json(archive, remote)[0] == 0
+    previous = (tombstone.read_tombstone(alpha) or {})["git"]
+    assert push_json(archive, remote, "--no-git")[0] == 0
+    assert (tombstone.read_tombstone(alpha) or {})["git"] == previous
+    monkeypatch.delenv("GWARCHIVE_GITEA_URL")
+    assert push_json(archive, remote)[0] == 0
+    assert (tombstone.read_tombstone(alpha) or {})["git"] == previous
+
+
+def test_an_offloaded_folder_is_skipped_by_push_without_a_git_call(
+    archive: Path,
+    alpha: Path,
+    server: Server,
+    remote: Path,
+    gzip_codec: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert run("offload", "P1", "--remote", remote, "--yes", "--path", archive).exit_code == 0
+    calls = spy_git(monkeypatch)
+    server.calls.clear()
+    res = run("push", "P1", "--remote", remote, "--path", archive)
+    assert res.exit_code == 0, res.stderr
+    assert [args for args, _ in calls if "ls-remote" in args or "push" in args] == []
+    assert server.writes() == []
+
+
+# --- offload, continued -------------------------------------------------------------------
+
+
+def test_offload_force_git_yes_logs_every_overwrite(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path, gzip_codec: None
+) -> None:
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    _diverge(server, tool, tmp_path)
+    mine = commit(tool, "mine")
+    res = run("offload", "P1", "--remote", remote, "--force-git", "--yes", "--path", archive)
+    assert res.exit_code == 0, res.stderr
+    assert "overwrites lab/p0001--src--tool: main (unknown: never fetched)" in res.stderr
+    assert server.refs("p0001--src--tool")["refs/heads/main"] == mine
+
+
+def test_offload_refusal_after_a_run_wide_error_offers_no_git(
+    archive: Path, alpha: Path, server: Server, remote: Path, rclone_local: list[list[str]]
+) -> None:
+    server.down = True
+    res = run("offload", "P1", "--remote", remote, "--yes", "--path", archive)
+    assert res.exit_code == 1
+    assert "nothing was transferred" in res.stderr
+    assert "--no-git" in res.stderr
+    assert rclone_local == []
+    assert (alpha / "src" / "tool" / "README").exists()
