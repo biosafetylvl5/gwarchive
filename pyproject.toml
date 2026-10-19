@@ -316,10 +316,12 @@ ignore_decorators = ["@app.command", "@app.callback", "@pytest.fixture"]
 # to be read here: `capture_output` on the _fake_run stand-ins (it must match
 # run_rclone's real signature -- .ruff.toml records the same reason for
 # declining ARG), and `free` on the NoRoom class standing in for the
-# shutil.disk_usage result, which production code reads as `.free`.
-ignore_names = ["duplicates", "stray", "gzip_codec", "linkname", "capture_output", "free"]
+# shutil.disk_usage result, which production code reads as `.free`. And
+# `redirect_request`, forge's override of the urllib handler method, called by
+# urllib and never by name here.
+ignore_names = ["duplicates", "stray", "gzip_codec", "linkname", "capture_output", "free", "redirect_request"]
 
-# Seven suppressions for a clean run, against a ~10 kill criterion. This is
+# Eight suppressions for a clean run, against a ~10 kill criterion. This is
 # also why there is no whitelist.py: `vulture --make-whitelist` emits 52 lines
 # for the same job and must be regenerated whenever line numbers move, while
 # this table is name-based and survives code motion. Verified not to blind the

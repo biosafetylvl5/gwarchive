@@ -32,8 +32,10 @@ LAYER = {
     "paths": 2,
     "tombstone": 2,
     "external": 2,
+    "forge": 2,
     "destination": 3,
     "tarball": 3,
+    "gitrepo": 3,
     "sync": 4,
     "options": 4,
     "commands": 5,
@@ -49,10 +51,11 @@ LAYER = {
 #
 # test_the_patched_set_is_complete keeps this honest: it reads the suite and
 # fails if anything is patched that is not listed here.
-SEAMS = {"clock", "external", "tarball"}
+SEAMS = {"clock", "external", "forge", "tarball"}
 PATCHED = {
     "clock": {"today", "now_stamp", "archive_stamp"},
-    "external": {"run_rclone", "run_zstd", "run_pokeget"},
+    "external": {"run_rclone", "run_zstd", "run_pokeget", "run_git"},
+    "forge": {"request"},
     "tarball": {"pick_codec", "create_archive"},
 }
 

@@ -1,0 +1,39 @@
+enhancement:
+  - title: "push and offload also copy a folder's git repositories to a Gitea server"
+    description: |
+      With `$GWARCHIVE_GITEA_URL`, `$GWARCHIVE_GITEA_OWNER` and
+      `$GWARCHIVE_GITEA_TOKEN_CMD` set, `push` and `offload` also push every
+      git repository inside the folder to a Gitea or Forgejo server, as a
+      private repository named after the folder's prefix. The rclone copy
+      still holds the whole folder; the server is a browsable extra copy.
+
+      `push --dry-run` is the status view. `--wip` also pushes uncommitted
+      work as `wip/<host>`, `--force-git` overwrites refused refs after a
+      prompt, and `--no-git` skips the server for one run. In `push` a git
+      failure never costs the rclone copy: the run exits 1 at the end. In
+      `offload` any refused ref or git error refuses the whole batch before
+      anything is transferred, and a folder is deleted only when every
+      destination succeeded. Copies in `Old/` are archived on the server.
+    files:
+      added:
+        - src/gwarchive/forge.py
+        - src/gwarchive/gitrepo.py
+        - tests/test_git.py
+      deleted: []
+      modified:
+        - src/gwarchive/external.py
+        - src/gwarchive/sync.py
+        - src/gwarchive/options.py
+        - src/gwarchive/commands/upload.py
+        - src/gwarchive/commands/verify.py
+        - src/gwarchive/commands/download.py
+        - flake.nix
+        - README.md
+        - AGENTS.md
+      moved: []
+    related-issue:
+      number: null
+      repo_url: ""
+    date:
+      start: null
+      finish: null

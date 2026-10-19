@@ -274,6 +274,7 @@ def fetch_folders(
                 write_tombstone(folder, meta)
             if not as_json:
                 ok(remote_message(past, f"{src} ({fetched})" if fetched else src, [shown]))
+                _git_note(existing_meta)
 
         entry: dict[str, object] = {
             "folder": shown,
@@ -290,6 +291,20 @@ def fetch_folders(
 
     if as_json:
         emit_json(results)
+
+
+def _git_note(meta: dict[str, object]) -> None:
+    """Where the folder's repositories also live, and how current that copy was."""
+    record = meta.get("git")
+    repos = record.get("repos") if isinstance(record, dict) else None
+    if not isinstance(record, dict) or not isinstance(repos, list) or not repos:
+        return
+    names = [str(r["repo"]) for r in repos if isinstance(r, dict) and r.get("repo")]
+    shown = ", ".join(names[:5]) + (f" (+{len(names) - 5} more)" if len(names) > 5 else "")
+    caption(
+        f"Also on {record.get('server')} as of {record.get('pushed_at')}: {shown}. "
+        "The server may since have newer commits; after an offload --no-git, this copy may be newer."
+    )
 
 
 @app.command()

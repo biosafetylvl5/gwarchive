@@ -111,6 +111,30 @@ PushRemotes = Annotated[
         "--remote", help="Remote destination, e.g. nas:archive (default $GWARCHIVE_REMOTE). Can be repeated."
     ),
 ]
+NoGit = Annotated[
+    bool,
+    typer.Option(
+        "--no-git",
+        help="Skip the git server this run, even though $GWARCHIVE_GITEA_URL is set; "
+        "with --dry-run, keeps the dry run offline",
+    ),
+]
+Wip = Annotated[
+    bool,
+    typer.Option(
+        "--wip",
+        help="Also push uncommitted work to the git server, as wip/<host>, "
+        "including untracked files that are not gitignored (such as .env)",
+    ),
+]
+ForceGit = Annotated[
+    bool,
+    typer.Option(
+        "--force-git",
+        help="Overwrite refused branches and tags on the git server, after confirmation. "
+        "Never touches local files.",
+    ),
+]
 PullRemote = Annotated[
     str | None,
     typer.Option("--remote", help="Remote source (defaults to recorded remote or $GWARCHIVE_REMOTE)"),

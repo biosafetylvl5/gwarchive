@@ -15,9 +15,11 @@ src/gwarchive/
     output.py       consoles, QUIET/VERBOSE, every emitter, die, program()
     paths.py        archive root, walking, prefix resolution, allocation
     tombstone.py    .gwarchive-offload.json read/write, tolerant JSON readers
-    external.py     rclone / zstd / pokeget, remote target validation    SEAM
+    external.py     rclone / zstd / pokeget / git, remote target checks  SEAM
+    forge.py        git server configuration and the Gitea API           SEAM
     destination.py  resolve_destination, the pre-flight guards, run_fs
     tarball.py      codecs, tar streaming, hashing, the version index    SEAM
+    gitrepo.py      a folder's repositories: discovery, naming, push
     sync.py         staging, scratch space, retention, target resolution
     options.py      the Typer app, the root callback, 17 Annotated aliases
     commands/       structure, move, browse, upload, download, stats,
@@ -54,15 +56,15 @@ changing either.
 
 **1. Imports point downward.** A module may import its own layer or below.
 
-| Layer | Modules                          |
-| ----- | -------------------------------- |
-| 0     | `naming`, `clock`, `__init__`    |
-| 1     | `output`                         |
-| 2     | `paths`, `tombstone`, `external` |
-| 3     | `destination`, `tarball`         |
-| 4     | `sync`, `options`                |
-| 5     | `commands/*`                     |
-| 6     | `__main__`                       |
+| Layer | Modules                                   |
+| ----- | ----------------------------------------- |
+| 0     | `naming`, `clock`, `__init__`             |
+| 1     | `output`                                  |
+| 2     | `paths`, `tombstone`, `external`, `forge` |
+| 3     | `destination`, `tarball`, `gitrepo`       |
+| 4     | `sync`, `options`                         |
+| 5     | `commands/*`                              |
+| 6     | `__main__`                                |
 
 `output` is layer 1 because everything calls `die()` on it. The guard parses
 imports with `ast`; a text search misfires on strings like `naming.py`'s
@@ -70,11 +72,12 @@ imports with `ast`; a text search misfires on strings like `naming.py`'s
 
 **2. Patched callables are imported as modules, never by name.**
 
-| Module     | Patched                                 |
-| ---------- | --------------------------------------- |
-| `clock`    | `today`, `now_stamp`, `archive_stamp`   |
-| `external` | `run_rclone`, `run_zstd`, `run_pokeget` |
-| `tarball`  | `pick_codec`, `create_archive`          |
+| Module     | Patched                                            |
+| ---------- | -------------------------------------------------- |
+| `clock`    | `today`, `now_stamp`, `archive_stamp`              |
+| `external` | `run_rclone`, `run_zstd`, `run_pokeget`, `run_git` |
+| `forge`    | `request`                                          |
+| `tarball`  | `pick_codec`, `create_archive`                     |
 
 Write `tarball.pick_codec()`, not `from gwarchive.tarball import pick_codec`: a
 from-import binds the real function, and the test double never reaches it.
@@ -150,11 +153,38 @@ that landed in 3.12 and was backported to 3.11.4, while the floor is 3.11.0 — 
 the vulnerable range is exactly the range nothing exercises. Hence the `3.11.0`
 leg in `tests.yaml`.
 
+### Git server
+
+With `$GWARCHIVE_GITEA_URL` set, `push`/`offload` also push each repository in
+the folder to Gitea (`forge.py` for the API, `gitrepo.py` for git). Three rules:
+
+- **At least one rclone remote is still required**; the server is an extra copy
+  and never the only one, so the rclone copy keeps `.git`.
+- **Setup errors exit 2 before any transfer**, rclone included; `--no-git`
+  skips every git check, so the rclone backup is always one flag away.
+- **After setup, every git failure is soft in `push`** (the copy and tombstone
+  go ahead, then exit 1 after the JSON) and refuses the whole batch in
+  `offload`'s pre-flight.
+
+Every local write into `.git` (the stored `gwarchive.git.repo`, `--wip`
+objects) happens **before** `snapshot_manifest`: one made after it would be left
+behind by the delete as a leftover. Pre-flight is read-only and runs git with
+`GIT_OPTIONAL_LOCKS=0`; `external.GIT_SAFETY` stops gc, fsmonitor and hooks.
+
+`--force-git` is not the shared `--force`: on `offload` that would read as
+"force the delete". Classification never fetches: a server sha missing locally
+is `unknown`, refused like `diverged`, because fetching would write into a
+repository about to be offloaded. The push sends pre-flight's shas, not ref
+names.
+
 ## Testing
 
 - The autouse `isolate` fixture points `$GWARCHIVE_BASE` at a tmpdir and clears
   every `GWARCHIVE_*` variable by prefix, so no test reaches a real archive or
   inherits a developer's settings.
+- `conftest.py` imports `gwarchive.commands`, so one test file runs alone.
+- `tests/test_git.py` runs real git with `GIT_CONFIG_GLOBAL=/dev/null`, bare
+  repositories as the server, and a fake `forge.request` as the API.
 - Assert against `--json`, not rendered tables. A fixture sets `COLUMNS=200`
   and the table assertions depend on it.
 
