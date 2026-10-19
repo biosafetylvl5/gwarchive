@@ -458,6 +458,122 @@ def test_a_commit_made_after_preflight_is_not_pushed(
     assert server.refs("p0001--src--tool")["refs/heads/main"] == first
 
 
+def test_a_server_moved_after_preflight_turns_a_fast_forward_into_refused(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    commit(tool, "mine")
+    real = external.run_git
+    theirs: list[str] = []
+
+    def move_then_push(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "push" in args and not theirs:
+            theirs.append(_diverge(server, tool, tmp_path))
+        return real(args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(external, "run_git", move_then_push)
+    code, (entry,), _ = push_json(archive, remote)
+    assert code == 1
+    (ref,) = [r for r in refs_of(repos_of(entry)[0]) if r["ref"] == "refs/heads/main"]
+    assert ref["action"] == "refused"
+    assert server.refs("p0001--src--tool")["refs/heads/main"] == theirs[0]
+
+
+def test_force_git_loses_its_lease_to_a_server_moved_after_preflight(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    _diverge(server, tool, tmp_path)
+    commit(tool, "mine")
+    real = external.run_git
+    later: list[str] = []
+
+    def move_then_push(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "push" in args and not later:
+            other = tmp_path / "elsewhere"
+            later.append(commit(other, "theirs again"))
+            git(other, "push", "-q", "origin", "HEAD:main")
+        return real(args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(external, "run_git", move_then_push)
+    code, (entry,), _ = push_json(archive, remote, "--force-git", "--yes")
+    assert code == 1
+    (ref,) = [r for r in refs_of(repos_of(entry)[0]) if r["ref"] == "refs/heads/main"]
+    assert ref["action"] == "refused"
+    assert server.refs("p0001--src--tool")["refs/heads/main"] == later[0]
+
+
+def test_a_failed_lfs_push_sends_no_refs(
+    archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gwarchive import gitrepo
+
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    before = server.refs("p0001--src--tool")
+    (tool / ".git" / "lfs" / "objects").mkdir(parents=True)
+    commit(tool, "big")
+    monkeypatch.setattr(gitrepo.shutil, "which", lambda name: f"/usr/bin/{name}")
+    real = external.run_git
+    order: list[str] = []
+
+    def failing_lfs(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "lfs" in args and "push" in args:
+            order.append("lfs")
+            return subprocess.CompletedProcess(args, 1, "", "batch request: 413")
+        if "push" in args:
+            order.append("refs")
+        return real(args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(external, "run_git", failing_lfs)
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 1
+    assert order == ["lfs"]
+    assert "git lfs push failed, so no refs were pushed" in err
+    assert server.refs("p0001--src--tool") == before
+    assert entry["remotes"]
+
+
+def test_a_run_wide_failure_keeps_the_previous_git_record(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    assert push_json(archive, remote)[0] == 0
+    previous = (tombstone.read_tombstone(alpha) or {})["git"]
+    commit(alpha / "src" / "tool", "later")
+    server.down = True
+    assert push_json(archive, remote)[0] == 1
+    assert (tombstone.read_tombstone(alpha) or {})["git"] == previous
+
+
+def test_offload_dry_run_refuses_like_the_real_run(
+    archive: Path, alpha: Path, server: Server, remote: Path, tmp_path: Path, rclone_local: list[list[str]]
+) -> None:
+    tool = alpha / "src" / "tool"
+    assert push_json(archive, remote)[0] == 0
+    _diverge(server, tool, tmp_path)
+    commit(tool, "mine")
+    rclone_local.clear()
+    res = run("offload", "P1", "--remote", remote, "--dry-run", "--path", archive)
+    assert res.exit_code == 1
+    assert "diverged main" in res.stderr or "unknown main" in res.stderr
+    assert rclone_local == []
+    assert (tool / "README").exists()
+
+
+def test_leaving_old_unarchives_what_g_archived(
+    archive: Path, alpha: Path, server: Server, remote: Path
+) -> None:
+    assert run("oldify", "P1", "--path", archive).exit_code == 0
+    assert run("push", "O", "--remote", remote, "--path", archive).exit_code == 0
+    assert server.archived("p0001--src--tool") is True
+    (old,) = (archive / "Old").iterdir()
+    old.rename(alpha)
+    assert run("push", "P1", "--remote", remote, "--path", archive).exit_code == 0
+    assert server.archived("p0001--src--tool") is False
+
+
 # --- dry runs ---------------------------------------------------------------------------------
 
 

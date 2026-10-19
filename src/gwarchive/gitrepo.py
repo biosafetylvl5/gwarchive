@@ -869,10 +869,11 @@ def record(run: GitRun, fg: FolderGit, prev_record: dict[str, object] | None) ->
                 }
             )
     out: dict[str, object] = {"server": run.cfg.url, "pushed_at": clock.now_stamp(), "repos": repos}
-    unconfirmed = any(r.error and not r.archive_failed for r in fg.active())
+    # A failed archive drops the category, so the next run's archive-on-first-sight
+    # rule retries it; an unconfirmed result keeps the previous one.
     if any(r.archive_failed for r in fg.active()):
-        pass  # removed: the next run's archive-on-first-sight rule retries
-    elif unconfirmed:
+        return out
+    if any(r.error for r in fg.active()):
         if "category" in prev:
             out["category"] = prev["category"]
     else:
