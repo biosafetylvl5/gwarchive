@@ -15,6 +15,9 @@ folder."""
 import tempfile
 from pathlib import Path
 
+import typer
+from rich.text import Text
+
 from gwarchive import __version__, clock, tarball
 from gwarchive.external import (
     RCLONE_EXCLUDES,
@@ -30,10 +33,13 @@ from gwarchive.options import (
     AsJsonSync,
     BasePath,
     DryRun,
+    ForceGit,
     Keep,
     NoCompressPush,
+    NoGit,
     PushRemotes,
     Selector,
+    Wip,
     Yes,
     app,
 )
@@ -42,11 +48,11 @@ from gwarchive.output import (
     confirm_destructive,
     die,
     emit_json,
+    labelled_message,
     note,
     ok,
     plural,
     program,
-    remote_message,
     symbol,
     warn,
 )
@@ -57,14 +63,25 @@ from gwarchive.paths import (
 from gwarchive.sync import (
     carry_remotes,
     compress_default,
+    confirm_force_git,
     delete_archived_contents,
     ensure_scratch_space,
+    git_batch_summary,
+    git_preflight,
+    git_refusal,
+    git_repo_lines,
+    git_row,
+    git_setup,
+    git_step,
+    git_summary_lines,
     keep_default,
     offload_summary,
     require_tombstone,
     resolve_sync_targets,
     snapshot_manifest,
     stage_archive,
+    warn_unattended,
+    wip_bytes,
 )
 from gwarchive.tarball import (
     prune_versions,
@@ -76,6 +93,7 @@ from gwarchive.tarball import (
 )
 from gwarchive.tombstone import (
     get_recorded_remotes,
+    is_offloaded,
     write_tombstone,
 )
 
@@ -88,22 +106,52 @@ def _unsupported_member_report(folder: Path, base_path: Path, bad: list[Path]) -
     return f"{shown}: {sample}{more}"
 
 
+def _receipt(verb: str, source: str, dests: list[str], git: list[tuple[str, str]]) -> Text:
+    """remote_message, plus the git server as one more destination row."""
+    return labelled_message(verb, [("from", source), *(("to", d) for d in dests), *git])
+
+
 @app.command()
 def push(
     selector: Selector,
     remote: PushRemotes = None,
     no_compress: NoCompressPush = False,
     keep: Keep = None,
+    no_git: NoGit = False,
+    wip: Wip = False,
+    force_git: ForceGit = False,
+    yes: Yes = False,
     dry_run: DryRun = False,
     as_json: AsJsonSync = False,
     *,
     base_path: BasePath,
 ) -> None:
-    """Push folder(s) to remote storage without deleting local copies."""
+    """Push folder(s) to remote storage without deleting local copies.
+
+    When $GWARCHIVE_GITEA_URL is set, also pushes the folder's git repositories
+    to that server; --dry-run is then the git server's status view.
+    """
+    retry = f"{program()} push {selector}"
     remotes = get_remotes(remote, "push")
     targets = resolve_sync_targets(selector, base_path, "push")
+    cfg = git_setup(no_git=no_git, force_git=force_git, yes=yes, as_json=as_json, retry=retry)
     # `codec` doubles as the compress flag: pick_codec never returns "".
     codec = tarball.pick_codec() if compress_default() and not no_compress else ""
+
+    # Offloaded folders hold nothing to push; the loop skips or refuses them.
+    run = (
+        git_preflight(
+            cfg,
+            [(c, f) for c, f in targets if not is_offloaded(f)],
+            wip=wip,
+            force_git=force_git,
+            as_json=as_json,
+            offload=False,
+        )
+        if cfg
+        else None
+    )
+    confirm_force_git(run, yes=yes, dry_run=dry_run)
 
     results: list[dict[str, object]] = []
 
@@ -145,6 +193,7 @@ def push(
                     "prefix": folder_prefix(folder.name),
                     "category": cat_name,
                     "skipped": "offloaded",
+                    "git": None,
                     "dry_run": dry_run,
                 }
             )
@@ -163,6 +212,15 @@ def push(
         prev_remotes = get_recorded_remotes(existing_meta)
         all_remotes = carry_remotes(prev_remotes, folder, base_path)
 
+        # The git step goes before the copy, so the copy's .git holds the
+        # stored name and the --wip objects. Then re-measure, since those were
+        # just written; then record what reached the server, alone, so an
+        # rclone failure below cannot lose it.
+        git_record = None if dry_run else git_step(run, folder, existing_meta, as_json=as_json)
+        if git_record is not None:
+            size, file_count = compute_folder_stats(folder)
+            write_tombstone(folder, {**existing_meta, "git": git_record})
+
         meta: dict[str, object] = {
             **existing_meta,
             "prefix": pfx,
@@ -179,6 +237,8 @@ def push(
         # restoring stale content.
         if not codec:
             meta.pop("archive", None)
+        if git_record is not None:
+            meta["git"] = git_record
 
         dests: list[str] = []
         pruned = 0
@@ -234,9 +294,10 @@ def push(
             if codec and isinstance(arch, dict):
                 pruned = prune_versions(arch, all_remotes, retain)
 
+        git = git_row(run, folder, dry_run=dry_run)
         if dry_run:
             if not as_json:
-                note(remote_message("Would push", display(folder, base_path), dests))
+                note(_receipt("Would push", display(folder, base_path), dests, git))
                 if codec:
                     caption(f"Would compress {file_count} file(s) into one {codec} object")
                 if pruned:
@@ -244,7 +305,7 @@ def push(
         else:
             write_tombstone(folder, meta)
             if not as_json:
-                ok(remote_message("Pushed", display(folder, base_path), dests))
+                ok(_receipt("Pushed", display(folder, base_path), dests, git))
                 if codec and was_loose and prev_remotes:
                     caption(
                         f"The pre-archive per-file copy is still on the remote under "
@@ -252,6 +313,7 @@ def push(
                     )
                 if pruned:
                     caption(f"Removed {plural(pruned, 'older copy', 'older copies')}")
+        git_repo_lines(run, folder, retry=retry, dry_run=dry_run, as_json=as_json)
 
         results.append(
             {
@@ -263,12 +325,19 @@ def push(
                 "remotes": all_remotes,
                 "archive": meta.get("archive"),
                 "pruned": pruned,
+                "git": run.folder_json(folder) if run else None,
                 "dry_run": dry_run,
             }
         )
 
+    if not as_json:
+        git_batch_summary(run, dry_run=dry_run)
     if as_json:
         emit_json(results)
+    # Soft in push: everything above went ahead, and this is the one signal.
+    # Not die(), which would skip the JSON document.
+    if run is not None and run.failed():
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -277,15 +346,24 @@ def offload(
     remote: PushRemotes = None,
     no_compress: NoCompressPush = False,
     keep: Keep = None,
+    no_git: NoGit = False,
+    wip: Wip = False,
+    force_git: ForceGit = False,
     yes: Yes = False,
     dry_run: DryRun = False,
     as_json: AsJsonSync = False,
     *,
     base_path: BasePath,
 ) -> None:
-    """Offload folder(s) to remote storage, deleting local files and leaving a tombstone."""
+    """Offload folder(s) to remote storage, deleting local files and leaving a tombstone.
+
+    When $GWARCHIVE_GITEA_URL is set, also pushes the folder's git repositories
+    to that server, and deletes only once every destination succeeded.
+    """
+    retry = f"{program()} offload {selector}"
     remotes = get_remotes(remote, "offload")
     targets = resolve_sync_targets(selector, base_path, "offload")
+    cfg = git_setup(no_git=no_git, force_git=force_git, yes=yes, as_json=as_json, retry=retry)
     # `codec` doubles as the compress flag: pick_codec never returns "".
     codec = tarball.pick_codec() if compress_default() and not no_compress else ""
     single_target = len(targets) == 1
@@ -363,18 +441,37 @@ def offload(
         (cat, folder, size, count) for cat, folder, _meta, _off, size, count in states
     ]
 
-    if codec and not dry_run:
-        # Folders are staged one at a time, so the largest of them is the
-        # requirement. Checked before the prompt: the scratch cost is part of
-        # what the user is agreeing to.
-        ensure_scratch_space(
-            max((size for _, _, size, _ in measured), default=0), Path(tempfile.gettempdir())
+    # Read-only, and the whole batch is refused on any refusal or error: this
+    # is the command that deletes, and a repository would otherwise be deleted
+    # locally in a state the user hasn't reviewed.
+    run = None
+    if cfg:
+        run = git_preflight(
+            cfg,
+            [(cat, folder) for cat, folder, *_ in states],
+            wip=wip,
+            force_git=force_git,
+            as_json=as_json,
+            offload=True,
         )
+        if run.failed():
+            raise git_refusal(run, retry)
 
-    if not dry_run and not confirm_destructive(
-        offload_summary(measured, remotes, base_path, codec), "Proceed with offload?", yes=yes
-    ):
-        raise die("Offload cancelled")
+    # Folders are staged one at a time, so the largest of them is the
+    # requirement; --wip first writes its objects into the folder's .git.
+    scratch = max((size + wip_bytes(run, folder) for _, folder, size, _ in measured), default=0)
+    if codec and not dry_run:
+        # Checked before the prompt: the scratch cost is part of what the user
+        # is agreeing to.
+        ensure_scratch_space(scratch, Path(tempfile.gettempdir()))
+
+    if not dry_run:
+        summary = offload_summary(
+            measured, remotes, base_path, codec, scratch=scratch, git_lines=git_summary_lines(run)
+        )
+        if not confirm_destructive(summary, "Proceed with offload?", yes=yes):
+            raise die("Offload cancelled")
+        warn_unattended(run, yes=yes)
 
     results: list[dict[str, object]] = []
 
@@ -386,6 +483,15 @@ def offload(
 
         prev_remotes = get_recorded_remotes(existing_meta)
         all_remotes = carry_remotes(prev_remotes, folder, base_path)
+
+        # Every local git write lands here, BEFORE snapshot_manifest: one made
+        # after it would be left behind by the delete as a leftover.
+        git_record = None if dry_run else git_step(run, folder, existing_meta, as_json=as_json)
+        if git_record is not None:
+            size, file_count = compute_folder_stats(folder)
+            write_tombstone(folder, {**existing_meta, "git": git_record})
+        fg = run.folders.get(folder) if run else None
+        git_ok = fg is None or not fg.failed()
 
         meta: dict[str, object] = {
             **existing_meta,
@@ -399,6 +505,8 @@ def offload(
         }
         if not codec:
             meta.pop("archive", None)
+        if git_record is not None:
+            meta["git"] = git_record
 
         dests: list[str] = []
         pruned = 0
@@ -457,17 +565,26 @@ def offload(
                 if codec and isinstance(arch, dict):
                     pruned = prune_versions(arch, all_remotes, retain)
 
+            git = git_row(run, folder, dry_run=dry_run)
             if dry_run:
                 if not as_json:
                     note(
-                        remote_message(
-                            "Would offload (and delete local files)", display(folder, base_path), dests
+                        _receipt(
+                            "Would offload (and delete local files)", display(folder, base_path), dests, git
                         )
                     )
                     if codec:
                         caption(f"Would compress {file_count} file(s) into one {codec} object")
                     if pruned:
                         caption(f"Would remove {plural(pruned, 'older copy', 'older copies')}")
+            elif not git_ok:
+                # Ends exactly like a push: copied, recorded, and still live.
+                # An offloaded_at here would call a live folder offloaded, and
+                # the next push would die on its "leftovers".
+                write_tombstone(folder, meta)
+                if not as_json:
+                    ok(_receipt("Pushed", display(folder, base_path), dests, git))
+                warn(f"{display(folder, base_path)}: the git step failed, so its local files were kept")
             else:
                 # Mark offloaded *before* deleting: if deletion is interrupted,
                 # the folder reads as offloaded-with-leftovers (a verify notice,
@@ -486,9 +603,10 @@ def offload(
                     )
 
                 if not as_json:
-                    ok(remote_message("Offloaded (local files deleted)", display(folder, base_path), dests))
+                    ok(_receipt("Offloaded (local files deleted)", display(folder, base_path), dests, git))
                     if pruned:
                         caption(f"Removed {plural(pruned, 'older copy', 'older copies')}")
+        git_repo_lines(run, folder, retry=retry, dry_run=dry_run, as_json=as_json)
 
         results.append(
             {
@@ -500,10 +618,15 @@ def offload(
                 "remotes": all_remotes,
                 "archive": meta.get("archive"),
                 "pruned": pruned,
-                "offloaded": not dry_run,
+                "offloaded": not dry_run and git_ok,
+                "git": run.folder_json(folder) if run else None,
                 "dry_run": dry_run,
             }
         )
 
+    if not as_json:
+        git_batch_summary(run, dry_run=dry_run)
     if as_json:
         emit_json(results)
+    if run is not None and run.failed():
+        raise typer.Exit(1)

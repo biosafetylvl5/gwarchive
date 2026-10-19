@@ -110,6 +110,38 @@ Each folder is pushed as one `tar.zst` (`tar.gz` without `zstd`) beside its
 mirror path. Even without the tombstone it is a plain archive:
 `zstd -d < x.tar.zst | tar -tvf -`.
 
+### Git server
+
+With `$GWARCHIVE_GITEA_URL` set, `push` and `offload` also copy every git
+repository inside the folder to a Gitea or Forgejo server, as private
+repositories named after the folder's prefix (`lab/p0001--src--tool`). The
+rclone copy still holds the whole folder, `.git` included; the server is an
+extra, browsable copy.
+
+```bash
+gwarchive push P --dry-run   # the status view: what each repository would send
+gwarchive push P --wip       # also push uncommitted work, as wip/<host>
+gwarchive push P --no-git    # the rclone copy alone
+```
+
+- **`push` never loses its backup to the server.** If the server is down or a
+  repository fails, the rclone copy and the tombstone still happen, and the
+  run exits 1 at the end with the complete `--json`.
+- **`offload` deletes only when every destination succeeded.** Any refused
+  branch or git error refuses the whole batch before anything is transferred.
+- **Classification never fetches.** A server commit this repository has never
+  fetched is *unknown* and refused like a diverged branch. A branch that stays
+  refused makes every nightly `push` exit 1. The ways out: reconcile it, skip
+  the repository with `git config gwarchive.git.skip true`, or `--force-git`.
+  In a scheduled job `--force-git --yes` also overwrites every unknown ref,
+  which is anything another machine pushed to the copy since this repository
+  last fetched.
+- `--wip` includes untracked files that are not gitignored, such as `.env`.
+- Concurrent runs on one folder are not prevented: the tombstone is
+  last-writer-wins, while server refs stay safe through `--force-with-lease`.
+- Over ssh the timeout detects a dead peer, not a live server that stops
+  reading, so a hung receive-pack can still stall a push.
+
 ## Exit codes
 
 | Code | Meaning                                                                      |
@@ -130,6 +162,16 @@ Errors go to stderr. Under `--json`, stdout carries only the JSON.
 | `GWARCHIVE_COMPRESS` | default for `--no-compress`          |
 | `GWARCHIVE_KEEP`     | archived copies retained per remote  |
 | `GWARCHIVE_POKEMON`  | sprite for `clears`                  |
+
+The git server (see [Git server](#git-server)):
+
+| Variable                    | Effect                                                                 |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `GWARCHIVE_GITEA_URL`       | API base, e.g. `https://git.example.org`; unset, there is no git step  |
+| `GWARCHIVE_GITEA_OWNER`     | the organization or user the copies go in                              |
+| `GWARCHIVE_GITEA_TOKEN_CMD` | a command printing the API token, e.g. `pass show gitea`               |
+| `GWARCHIVE_GITEA_GIT`       | push URL template, e.g. `ssh://git@host:2222/{owner}/{repo}.git`       |
+| `GWARCHIVE_GITEA_TIMEOUT`   | seconds, default `60`: a total for API calls, a stall limit for pushes |
 
 ## Development
 

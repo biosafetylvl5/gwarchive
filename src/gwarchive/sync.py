@@ -17,10 +17,11 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
+import typer
 from rich.filesize import decimal
 from rich.text import Text
 
-from gwarchive import clock, tarball
+from gwarchive import clock, gitrepo, tarball
 from gwarchive.destination import locate_source
 from gwarchive.external import (
     get_remotes,
@@ -30,6 +31,8 @@ from gwarchive.external import (
     remote_root_of,
     validate_remote_target,
 )
+from gwarchive.forge import GitConfig, load_config, url_host
+from gwarchive.gitrepo import FolderGit, GitRun, Repo
 from gwarchive.naming import (
     CATEGORIES,
     CATEGORY_NAMES,
@@ -42,7 +45,13 @@ from gwarchive.naming import (
 from gwarchive.output import (
     LABEL_WIDTH,
     STYLES,
+    caption,
+    confirm_destructive,
+    detail,
     die,
+    error,
+    hint,
+    interactive,
     plural,
     program,
     spinner,
@@ -279,6 +288,9 @@ def offload_summary(
     remotes: Sequence[str],
     base_path: Path,
     codec: str = "",
+    *,
+    scratch: int | None = None,
+    git_lines: Sequence[str] = (),
 ) -> Text:
     """What is about to be deleted locally, and how much disk that returns.
 
@@ -308,11 +320,14 @@ def offload_summary(
         summary.append(f"\n{'packs':<{LABEL_WIDTH}}", style=STYLES["label"])
         summary.append(f"one {codec} object per folder")
         summary.append(f"\n{'needs':<{LABEL_WIDTH}}", style=STYLES["label"])
-        summary.append(
-            f"{decimal(max((size for _, _, size, _ in measured), default=0))} of scratch in $TMPDIR"
-        )
+        if scratch is None:
+            scratch = max((size for _, _, size, _ in measured), default=0)
+        summary.append(f"{decimal(scratch)} of scratch in $TMPDIR")
     summary.append(f"\n{'to':<{LABEL_WIDTH}}", style=STYLES["label"])
     summary.append(", ".join(remotes))
+    for i, line in enumerate(git_lines):
+        summary.append(f"\n{'git' if i == 0 else '':<{LABEL_WIDTH}}", style=STYLES["label"])
+        summary.append(line)
     return summary
 
 
@@ -445,3 +460,323 @@ def overwrite_summary(entries: Sequence[tuple[Path, int]], base_path: Path) -> T
         summary.append(f"{display(folder, base_path):<{width}}  ")
         summary.append(f"{plural(count, 'local file')}\n", style=STYLES["label"])
     return summary
+
+
+# --- the git server --------------------------------------------------------------
+#
+# push and offload call these in the same order: git_setup before anything,
+# git_preflight before any prompt or transfer, git_step per folder BEFORE
+# offload's snapshot_manifest, then the receipt row and the repository lines.
+# The rules behind that order are in gitrepo's docstring.
+
+
+def git_setup(*, no_git: bool, force_git: bool, yes: bool, as_json: bool, retry: str) -> GitConfig | None:
+    """Every setup check, before any transfer. None: no git step this run.
+
+    ``--force-git --json`` without ``--yes`` is refused whether or not anything
+    would be refused: checked only on a refusal, a cron line would work every
+    night until the first divergence, then lose that night's backup.
+    """
+    if no_git:
+        return None
+    if force_git and as_json and not yes:
+        raise die(
+            "--force-git asks before overwriting, and a --json run cannot answer.",
+            code=2,
+            fix=f"{retry} --force-git --json --yes",
+        )
+    return load_config()
+
+
+def git_preflight(
+    cfg: GitConfig,
+    folders: list[tuple[str, Path]],
+    *,
+    wip: bool,
+    force_git: bool,
+    as_json: bool,
+    offload: bool,
+) -> GitRun:
+    """The read-only half, for the whole batch. A run-wide failure is reported here, once."""
+    host = url_host(cfg.url)
+    with spinner(f"Checking repositories on {host}", as_json=as_json):
+        run = gitrepo.preflight(
+            cfg,
+            folders,
+            wip=wip,
+            force_git=force_git,
+            unattended=not interactive(as_json),
+            offload=offload,
+        )
+    if run.error and not offload:
+        warn(f"git server {host}: {run.error}. The rclone copy goes ahead; no repository is pushed.")
+    return run
+
+
+def _short(ref: str) -> str:
+    if ref.startswith("refs/tags/"):
+        return "tag " + ref.removeprefix("refs/tags/")
+    return ref.removeprefix("refs/heads/")
+
+
+def _label(fg: FolderGit, repo: Repo) -> str:
+    prefix = folder_prefix(fg.folder.name) or fg.folder.name
+    return prefix if repo.rel == "." else f"{prefix} {repo.rel}"
+
+
+def _refused_text(refs: Sequence[gitrepo.Ref]) -> str:
+    """``diverged main, dev; unknown release``, grouped by state."""
+    groups: dict[str, list[str]] = {}
+    for ref in refs:
+        groups.setdefault(ref.state, []).append(_short(ref.ref))
+    text = "; ".join(f"{state} {', '.join(names)}" for state, names in groups.items())
+    if "unknown" in groups:
+        text += " (the server has commits this repository never fetched)"
+    return text
+
+
+def _forced(repo: Repo) -> list[gitrepo.Ref]:
+    return [r for r in repo.refs if r.action == "forced"]
+
+
+def _outcome(repo: Repo) -> str:
+    if repo.skipped:
+        return "skipped"
+    if repo.error:
+        return "error"
+    if repo.refused():
+        return "refused"
+    if repo.wip or any(r.action in ("pushed", "forced") for r in repo.refs):
+        return "pushed"
+    return "up to date"
+
+
+def _counts(repos: Sequence[Repo], dry_run: bool) -> str:
+    tally: dict[str, int] = {}
+    for repo in repos:
+        tally[_outcome(repo)] = tally.get(_outcome(repo), 0) + 1
+    created = sum(1 for r in repos if r.created and not r.error)
+    dirty = sum(1 for r in repos if r.dirty and not r.wip and not r.skipped)
+    parts = [
+        f"{tally['pushed']} {'to push' if dry_run else 'pushed'}" if tally.get("pushed") else "",
+        f"{tally['up to date']} up to date" if tally.get("up to date") else "",
+        f"{created} {'to create' if dry_run else 'created'}" if created else "",
+        f"{tally['refused']} refused" if tally.get("refused") else "",
+        f"{plural(tally['error'], 'error')}" if tally.get("error") else "",
+        f"{dirty} dirty" if dirty else "",
+        f"{tally['skipped']} skipped" if tally.get("skipped") else "",
+    ]
+    return ", ".join(p for p in parts if p)
+
+
+def git_row(run: GitRun | None, folder: Path, *, dry_run: bool) -> list[tuple[str, str]]:
+    """The receipt's ``git`` row, or no row when there is no git step."""
+    if run is None:
+        return []
+    where = f"{url_host(run.cfg.url)}/{run.cfg.owner}"
+    if run.error:
+        return [("git", f"{where}  failed: see above")]
+    fg = run.folders.get(folder)
+    if fg is None or not fg.repos:
+        return [("git", f"{where}  no repositories")]
+    text = f"{where}  {plural(len(fg.repos), 'repository', 'repositories')}: {_counts(fg.repos, dry_run)}"
+    if any(r.dirty and not r.wip and not r.skipped for r in fg.repos):
+        text += "  (add --wip)"
+    if fg.failed():
+        text += "; see below"
+    return [("git", text)]
+
+
+def git_repo_lines(run: GitRun | None, folder: Path, *, retry: str, dry_run: bool, as_json: bool) -> None:
+    """The lines after a folder's receipt, only for states that need the user.
+
+    Refusals and errors go to stderr through warn, so they survive --quiet and
+    --json; everything else is stdout chrome, which --json owns.
+    """
+    if run is None or run.error:
+        return
+    fg = run.folders.get(folder)
+    if fg is None:
+        return
+    owner = run.cfg.owner
+    for repo in fg.repos:
+        label = _label(fg, repo)
+        if repo.skipped:
+            if not as_json:
+                detail(f"{label}: skipped -- {repo.skipped}")
+                if gitrepo.git_bool(repo.first("gwarchive.git.skip")):
+                    detail(f'  undo: git -C "{repo.path}" config --unset gwarchive.git.skip')
+            continue
+        if repo.error:
+            warn(f"{label}: {repo.error}")
+        elif repo.refused():
+            warn(f"{label}: {_refused_text(repo.refused())}")
+        if repo.error or repo.refused():
+            for line in gitrepo.hint_lines(repo, run, retry):
+                hint(line)
+        if repo.lfs == "missing":
+            warn(
+                f"{label}: uses Git LFS, but git-lfs is not installed; "
+                "its LFS objects are in the rclone copy only"
+            )
+        if repo.error or as_json:
+            continue
+        if repo.created:
+            caption(f"{label}: {'would create' if dry_run else 'created'} {owner}/{repo.repo}")
+        if _forced(repo):
+            verb = "would overwrite" if dry_run else "overwrote"
+            caption(f"{label}: {verb} {', '.join(_short(r.ref) for r in _forced(repo))} on the server")
+        behind = [_short(r.ref) for r in repo.refs if r.state == "behind"]
+        if behind:
+            caption(f"{label}: the server is ahead on {', '.join(behind)}; nothing to push there")
+        if repo.archive_note:
+            caption(f"{label}: {repo.archive_note} {owner}/{repo.repo}")
+        if repo.wip and repo.untracked:
+            shown = ", ".join(repo.untracked[:10])
+            more = f" (+{len(repo.untracked) - 10} more)" if len(repo.untracked) > 10 else ""
+            caption(f"{label}: {repo.wip} includes untracked {shown}{more}")
+        if not (repo.created or behind or repo.archive_note or repo.refused()):
+            detail(f"{label}: {_outcome(repo)} as {owner}/{repo.repo}")
+
+
+def git_batch_summary(run: GitRun | None, *, dry_run: bool) -> None:
+    """One line across a batch of more than one folder."""
+    if run is None or run.error or len(run.folders) < 2:
+        return
+    repos = [r for fg in run.folders.values() for r in fg.repos]
+    if repos:
+        caption(
+            f"git: {plural(len(repos), 'repository', 'repositories')} in {len(run.folders)} folders: "
+            f"{_counts(repos, dry_run)}"
+        )
+
+
+def _overwrite_lines(run: GitRun) -> list[str]:
+    lines = []
+    for fg in run.folders.values():
+        for repo in fg.repos:
+            forced = _forced(repo)
+            if forced:
+                names = ", ".join(
+                    _short(r.ref) + (" (unknown: never fetched)" if r.state == "unknown" else "")
+                    for r in forced
+                )
+                lines.append(f"overwrites {run.cfg.owner}/{repo.repo}: {names}")
+    return lines
+
+
+def _dirty_lines(run: GitRun) -> list[str]:
+    return [
+        f"{_label(fg, repo)} has uncommitted changes. They will be in the rclone copy only; "
+        "add --wip to also keep them on the server."
+        for fg in run.folders.values()
+        for repo in fg.active()
+        if repo.dirty and not repo.wip
+    ]
+
+
+def confirm_force_git(run: GitRun | None, *, yes: bool, dry_run: bool) -> None:
+    """push's one prompt: only when --force-git has something to overwrite.
+
+    Declined, the refs go back to refused and the run carries on.
+    """
+    if run is None or dry_run:
+        return
+    lines = _overwrite_lines(run)
+    if not lines:
+        return
+    summary = Text()
+    summary.append("Overwrite refs on the git server\n\n", style="bold")
+    summary.append("\n".join(lines))
+    if yes:
+        for line in lines:
+            warn(line)
+    if not confirm_destructive(summary, "Overwrite them?", yes=yes):
+        gitrepo.declined(run)
+
+
+def git_summary_lines(run: GitRun | None) -> list[str]:
+    """offload's confirmation additions. Printed through warn as well under --yes."""
+    if run is None:
+        return []
+    repos = [r for fg in run.folders.values() for r in fg.repos]
+    lines = [f"{url_host(run.cfg.url)}/{run.cfg.owner}  {plural(len(repos), 'repository', 'repositories')}"]
+    there = sum(1 for r in repos if r.skipped and r.skipped.startswith("already there"))
+    if there:
+        lines.append(
+            f"{plural(there, 'repository', 'repositories')} already there, not checked against the server: "
+            "commits not yet on it will be in the rclone copy only"
+        )
+    return lines + _overwrite_lines(run) + _dirty_lines(run)
+
+
+def warn_unattended(run: GitRun | None, *, yes: bool) -> None:
+    """--yes renders no summary, so the lines a scheduled run's log needs go to stderr."""
+    if run is None or not yes:
+        return
+    for line in _overwrite_lines(run) + _dirty_lines(run):
+        warn(line)
+
+
+def wip_bytes(run: GitRun | None, folder: Path) -> int:
+    """What --wip will write into the folder's .git: an upper bound, before compression."""
+    fg = run.folders.get(folder) if run else None
+    return sum(r.changed_bytes for r in fg.active() if r.wip) if fg else 0
+
+
+def git_refusal(run: GitRun, retry: str) -> typer.Exit:
+    """offload's whole-batch refusal: every affected repository, then the ways forward."""
+    error("Cannot offload -- the git server would not hold every repository, so nothing was transferred.")
+    if run.error:
+        warn(f"git server {url_host(run.cfg.url)}: {run.error}")
+        hint(f"{retry} --no-git   # rclone copy only; the server keeps what it has")
+        return typer.Exit(1)
+    fetches: list[str] = []
+    fixes: list[str] = []
+    refused = unknown = False
+    for fg in run.folders.values():
+        for repo in fg.repos:
+            if repo.error:
+                warn(f"{_label(fg, repo)}: {repo.error}")
+                fixes.extend(repo.fixes)
+            elif repo.refused():
+                warn(f"{_label(fg, repo)}: {_refused_text(repo.refused())}")
+                refused = True
+                unknown = unknown or any(r.state == "unknown" for r in repo.refused())
+                fetches.extend(line for line in gitrepo.hint_lines(repo, run, retry) if " fetch " in line)
+    for line in fetches:
+        hint(f"{line}   # unknown refs: see what the server has first")
+    hint(f"{retry} --no-git   # rclone copy only; the server keeps what it has")
+    if refused:
+        note = ", including commits never fetched" if unknown else ""
+        hint(f"{retry} --force-git   # overwrite the refused server refs{note}")
+    for line in fixes:
+        hint(line)
+    return typer.Exit(1)
+
+
+def git_step(
+    run: GitRun | None, folder: Path, existing_meta: dict[str, object], *, as_json: bool
+) -> dict[str, object] | None:
+    """The git writes for one folder, and the tombstone's new ``git`` record.
+
+    None means keep the previous record untouched: no server, --no-git, a
+    run-wide failure, or a folder that has never had a repository.
+    """
+    if run is None or run.error or run.forge is None:
+        return None
+    fg = run.folders.get(folder)
+    if fg is None:
+        return None
+    raw = existing_meta.get("git")
+    prev = raw if isinstance(raw, dict) else None
+    if not fg.active() and prev is None:
+        return None
+    label = (
+        None
+        if as_json or not fg.active()
+        else f"Pushing repositories of {folder.name} {symbol('transfer')} {url_host(run.cfg.url)}"
+    )
+    with spinner(label, as_json=as_json):
+        gitrepo.apply(run, fg, prev)
+    return gitrepo.record(run, fg, prev)

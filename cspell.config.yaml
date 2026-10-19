@@ -20,26 +20,35 @@ words:
   - docstrings
   - Dunder
   - esbenp
+  - Forgejo
   - geoips
   - gethostname
+  - gitea
+  - gitenv
+  - gitrepo
   - groupindex
   - himawari
   - IODC
   - isort
   - kwargs
   - lextudio
+  - LFS
   - matangover
   - mccabe
+  - mkstemp
   - Meso
   - meteosat
-  - mypy
   - Mypy
+  - mypy
   - newhost
   - newplatform
   - njpwerner
   - NOAA
   - noconfirm
+  - NOSYSTEM
   - numpy
+  - objectname
+  - objecttype
   - onefile
   - pathlib
   - pinkrst
@@ -56,22 +65,32 @@ words:
   - pyyaml
   - rabbitmq
   - rabbitmqhost
+  - reflogs
+  - refspec
+  - refspecs
   - seviri
+  - shlex
   - snekvik
   - specpath
   - sphinxarg
+  - sshcommand
   - tamasfe
   - testhost
   - trond
   - tryceratops
   - typer
+  - urllib
+  - urlopen
   - Uttmark
   - viewcode
   - workpath
+  - worktree
+  - worktrees
   - xarray
   - yday
   # Project, stdlib and tooling vocabulary.
   - actrc
+  - activitytimeout
   - acttoolcache
   - APFS
   - arcname
@@ -92,6 +111,7 @@ words:
   - creativecommons
   - delenv
   - deletefile
+  - dialtimeout
   - dests
   - difflib
   - eevee
@@ -104,11 +124,13 @@ words:
   - fileset
   - fnmatch
   - followlinks
+  - fsmonitor
   - greppable
   - gwarchive
   - hardlinks
   - inspectable
   - iterdir
+  - killpg
   - lockfiles
   - manylinux
   - metavar

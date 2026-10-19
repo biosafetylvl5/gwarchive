@@ -23,10 +23,11 @@ from typing import Annotated
 import typer
 from rich.text import Text
 
-from gwarchive import clock, output
+from gwarchive import clock, external, forge, output
 from gwarchive.destination import (
     run_fs,
 )
+from gwarchive.gitrepo import holds_prefix
 from gwarchive.naming import (
     CATEGORIES,
     CATEGORY_NAMES,
@@ -362,6 +363,51 @@ def split_issues(issues: Sequence[Issue]) -> tuple[list[Issue], list[Issue]]:
     )
 
 
+def collect_git_issues(base_path: Path) -> Iterator[Issue]:
+    """Offline: no server is contacted, so verify still runs anywhere.
+
+    A partial configuration is a notice, since the feature would otherwise be
+    off in silence. A folder's own repository whose stored name carries another
+    folder's prefix is the cp case push refuses, found here before a push.
+    """
+    partial = forge.partially_configured()
+    if partial:
+        yield Issue(
+            "Git server",
+            f"{', '.join(partial)} set, but GWARCHIVE_GITEA_URL is not: the git server is off",
+            fix_hint="export GWARCHIVE_GITEA_URL=https://git.example.org",
+            severity=NOTICE,
+        )
+    for _, folder in iter_archive_folders(base_path):
+        shown = display(folder, base_path)
+        if (folder / ".git").exists():
+            proc = external.run_git(["config", "--get", "gwarchive.git.repo"], cwd=folder)
+            stored = proc.stdout.strip() if proc.returncode == 0 else ""
+            own = (folder_prefix(folder.name) or "").lower()
+            name = stored.partition("/")[2]
+            if stored and own and not holds_prefix(name, own):
+                yield Issue(
+                    "Git server",
+                    f"{shown}'s repository has the stored name {stored}, from another folder's prefix "
+                    "(copied by cp?)",
+                    fix_hint=f'git -C "{folder}" config --unset gwarchive.git.repo',
+                )
+        _, data = read_tombstone_state(folder)
+        record = (data or {}).get("git")
+        repos = record.get("repos") if isinstance(record, dict) else None
+        # An offloaded folder has no repositories on disk to be missing.
+        if not isinstance(repos, list) or (data or {}).get("offloaded_at"):
+            continue
+        for entry in repos:
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if isinstance(path, str) and not (folder / path).exists():
+                yield Issue(
+                    "Git server",
+                    f"{shown}: the repository recorded at {path} is no longer there",
+                    severity=NOTICE,
+                )
+
+
 @app.command()
 def verify(
     fix: Annotated[
@@ -395,6 +441,7 @@ def verify(
         *collect_subfolder_issues(base_path),
         *collect_uniqueness_issues(base_path),
         *collect_tombstone_issues(base_path),
+        *collect_git_issues(base_path),
     ]
 
     if fix:

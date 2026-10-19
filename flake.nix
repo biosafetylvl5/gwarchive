@@ -36,7 +36,7 @@
       };
 
       mkGwarchive =
-        python:
+        pkgs: python:
         python.pkgs.buildPythonApplication {
           pname = "gwarchive";
           inherit version src;
@@ -48,10 +48,12 @@
             python.pkgs.rich
           ];
 
-          # click>=8.2, for CliRunner's separate result.stderr.
+          # click>=8.2, for CliRunner's separate result.stderr. git, because
+          # tests/test_git.py runs real git against bare repositories.
           nativeCheckInputs = [
             python.pkgs.pytestCheckHook
             python.pkgs.click
+            pkgs.git
           ];
 
           # Both run `sys.executable -m gwarchive` with only PATH set, and the
@@ -107,7 +109,8 @@
       packages = forAllSystems (
         system:
         let
-          gwarchive = mkGwarchive (pkgsFor system).python313;
+          pkgs = pkgsFor system;
+          gwarchive = mkGwarchive pkgs pkgs.python313;
         in
         {
           inherit gwarchive;

@@ -6,6 +6,7 @@ tried that" is the useful part.
 """
 
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -31,8 +32,10 @@ LAYER = {
     "paths": 2,
     "tombstone": 2,
     "external": 2,
+    "forge": 2,
     "destination": 3,
     "tarball": 3,
+    "gitrepo": 3,
     "sync": 4,
     "options": 4,
     "commands": 5,
@@ -48,10 +51,11 @@ LAYER = {
 #
 # test_the_patched_set_is_complete keeps this honest: it reads the suite and
 # fails if anything is patched that is not listed here.
-SEAMS = {"clock", "external", "tarball"}
+SEAMS = {"clock", "external", "forge", "tarball"}
 PATCHED = {
     "clock": {"today", "now_stamp", "archive_stamp"},
-    "external": {"run_rclone", "run_zstd", "run_pokeget"},
+    "external": {"run_rclone", "run_zstd", "run_pokeget", "run_git"},
+    "forge": {"request"},
     "tarball": {"pick_codec", "create_archive"},
 }
 
@@ -298,3 +302,15 @@ def test_the_version_guard_parses_on_old_python() -> None:
     compile(head, "__main__.py", "exec")
     assert "sys.version_info" in head
     assert sys.version_info >= (3, 11)
+
+
+def test_isolate_leaves_no_gwarchive_setting_but_the_base() -> None:
+    """Prevents a developer's shell from deciding what the suite exercises.
+
+    The fixture once cleared three names from a list, while AGENTS.md said it
+    cleared by prefix; a GWARCHIVE_REMOTE or a git-server setting in the
+    developer's environment then reached every test. Run the suite with one
+    exported to see this fail against a list-based fixture.
+    """
+    leaked = sorted(n for n in os.environ if n.startswith("GWARCHIVE_") and n != "GWARCHIVE_BASE")
+    assert leaked == []
