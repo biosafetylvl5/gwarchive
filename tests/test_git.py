@@ -1128,6 +1128,36 @@ def test_a_stored_name_from_another_prefix_refuses_only_that_repository(
     assert "p0001--src--tool" in server.repos and "p0009--other" not in server.repos
 
 
+@pytest.mark.parametrize("root_repo", [False, True], ids=["plain", "into-a-repository"])
+def test_a_folder_moved_inside_another_keeps_its_repository(
+    archive: Path, alpha: Path, server: Server, remote: Path, root_repo: bool
+) -> None:
+    """``mv P0002 P0001``: the stored name keeps P0002's prefix, and an ancestor still has it.
+
+    Its recorded path ``.`` now names P0001's own root, which always exists; when
+    that root is a repository too, its stored name is P0001's, so it is no copy.
+    """
+    if root_repo:
+        make_repo(alpha)
+    assert run("create", "P", "Beta", "--path", archive).exit_code == 0
+    beta = make_repo(archive / "Project" / "P0002 Beta")
+    assert run("push", "P", "--remote", remote, "--path", archive).exit_code == 0
+    assert git(beta, "config", "gwarchive.git.repo") == "lab/p0002"
+    first = commit(beta, "before the move")
+    assert run("mv", "P2", "P1", "--path", archive).exit_code == 0
+    moved = alpha / "P0002 Beta"
+    assert moved.is_dir()
+    later = commit(moved, "after the move")
+    code, (entry,), err = push_json(archive, remote)
+    assert code == 0, err
+    repo = by_path(entry)["P0002 Beta"]
+    assert (repo["repo"], repo["error"], repo["created"]) == ("lab/p0002", None, False)
+    assert server.refs("p0002")["refs/heads/main"] == later != first
+    assert server.repos["p0002"]["description"] == "gwarchive: P0001 Alpha [draft] / P0002 Beta"
+    assert set(server.repos) == {"p0001--src--tool", "p0002"} | ({"p0001"} if root_repo else set())
+    assert run("verify", "--path", archive).exit_code == 0
+
+
 def test_a_redirected_name_is_an_error_naming_the_new_one(
     archive: Path, alpha: Path, server: Server, remote: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
