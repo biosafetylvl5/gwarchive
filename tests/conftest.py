@@ -18,7 +18,15 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner, Result
 
-from gwarchive import clock, external, naming, options, output, tarball
+from gwarchive import (  # noqa: F401  `commands` registers the commands on `app`
+    clock,
+    commands,
+    external,
+    naming,
+    options,
+    output,
+    tarball,
+)
 
 runner = CliRunner()
 
